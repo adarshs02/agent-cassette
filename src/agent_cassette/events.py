@@ -53,9 +53,7 @@ def migrate_event_dict(data: dict[str, Any]) -> dict[str, Any]:
     while version < SCHEMA_VERSION:
         migration = _MIGRATIONS.get(version)
         if migration is None:
-            raise ValueError(
-                f"No migration registered from cassette schema version {version}"
-            )
+            raise ValueError(f"No migration registered from cassette schema version {version}")
         current = dict(migration(dict(current)))
         migrated_version = current.get("schema_version", version)
         if migrated_version != version + 1:

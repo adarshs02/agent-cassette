@@ -94,7 +94,9 @@ _ALLOWED_INJECTED_ERRORS: dict[str, type[Exception]] = {
 }
 
 
-def _parse_injection_action(item: dict[str, Any], *, nested: bool = False) -> Return | Raise | Delay:
+def _parse_injection_action(
+    item: dict[str, Any], *, nested: bool = False
+) -> Return | Raise | Delay:
     action_name = item.get("action")
     if action_name == "return":
         return Return(item.get("value"))

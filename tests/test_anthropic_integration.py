@@ -96,9 +96,9 @@ def test_anthropic_async_messages_record_and_replay(tmp_path):
         with Cassette.record(path) as cassette:
             recorded = await wrap_anthropic(live_client, cassette).messages.create(**REQUEST)
         with Cassette.replay(path) as cassette:
-            replayed = await wrap_anthropic(
-                None, cassette, asynchronous=True
-            ).messages.create(**REQUEST)
+            replayed = await wrap_anthropic(None, cassette, asynchronous=True).messages.create(
+                **REQUEST
+            )
         return recorded, replayed
 
     recorded, replayed = asyncio.run(scenario())
@@ -134,7 +134,7 @@ def test_anthropic_raw_response_helpers_are_rejected(tmp_path):
     with Cassette.record(tmp_path / "raw.jsonl") as cassette:
         client = wrap_anthropic(FakeAnthropic(), cassette)
         with pytest.raises(AnthropicRawResponseUnsupportedError):
-            client.messages.with_raw_response
+            _ = client.messages.with_raw_response
 
 
 @pytest.fixture

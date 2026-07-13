@@ -144,9 +144,7 @@ def test_cli_injections_parse_delay_and_rate_limit(tmp_path):
 def test_cli_injections_reject_nested_delay(tmp_path):
     rules_path = tmp_path / "nested.json"
     rules_path.write_text(
-        json.dumps(
-            [{"action": "delay", "seconds": 1, "then": {"action": "delay", "seconds": 1}}]
-        ),
+        json.dumps([{"action": "delay", "seconds": 1, "then": {"action": "delay", "seconds": 1}}]),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="injection action"):

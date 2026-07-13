@@ -29,9 +29,7 @@ class ProviderSpec:
     provider: str
     operations: frozenset[str]
     prefixes: frozenset[str]
-    raw_response_attrs: frozenset[str] = frozenset(
-        {"with_raw_response", "with_streaming_response"}
-    )
+    raw_response_attrs: frozenset[str] = frozenset({"with_raw_response", "with_streaming_response"})
     unsupported_operations: dict[str, str] = field(default_factory=dict)
     derive_methods: frozenset[str] = frozenset({"with_options", "copy"})
     async_probe_path: tuple[str, ...] = ()
