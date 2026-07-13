@@ -28,6 +28,14 @@ from agent_cassette.replay import RateLimitError, RecordedCallError, ReplayMisma
 from agent_cassette.reports import CIReport
 from agent_cassette.viewer import render_viewer, write_viewer
 
+
+def wrap_langchain(runnable, cassette, *, name="langchain.runnable"):
+    """Lazily wrap a LangChain Runnable without making LangChain a core dependency."""
+    from agent_cassette.integrations.langchain import wrap_langchain as _wrap_langchain
+
+    return _wrap_langchain(runnable, cassette, name=name)
+
+
 __all__ = [
     "Adapter",
     "AdapterRegistry",
@@ -68,6 +76,7 @@ __all__ = [
     "render_viewer",
     "unregister_migration",
     "wrap_anthropic",
+    "wrap_langchain",
     "wrap_mcp",
     "wrap_openai",
     "write_viewer",

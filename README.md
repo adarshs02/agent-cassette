@@ -4,7 +4,7 @@
 
 Observability platforms show what happened. Agent Cassette reproduces what happened and makes the execution testable.
 
-> `0.11.1b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
+> `0.12.0b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
 
 ## Why Agent Cassette
 
@@ -42,13 +42,41 @@ For library use, install the core package or only the integrations you need:
 pip install agent-cassette
 ```
 
-The core package has no runtime dependencies. Provider integrations are optional:
+The core package has no runtime dependencies. Provider and framework integrations
+are optional:
 
 ```bash
 pip install "agent-cassette[openai]"
 pip install "agent-cassette[anthropic]"
 pip install "agent-cassette[agents]"
+pip install "agent-cassette[langchain]"
 ```
+
+## LangChain Runnables
+
+Wrap an LCEL composition, `@chain` Runnable, or other LangChain Runnable at its
+execution boundary:
+
+```python
+from agent_cassette import Cassette, wrap_langchain
+
+chain = prompt | model | parser
+
+with Cassette.record("chain.jsonl") as cassette:
+    recorded = wrap_langchain(chain, cassette, name="research.chain")
+    result = recorded.invoke({"topic": "agent testing"})
+
+with Cassette.replay("chain.jsonl") as cassette:
+    replayed = wrap_langchain(None, cassette, name="research.chain")
+    result = replayed.invoke({"topic": "agent testing"})
+```
+
+`invoke`, `ainvoke`, `stream`, `astream`, `batch`, and `abatch` are supported.
+Replay with `None` never constructs or calls a live Runnable. LangChain values use
+safe, code-owned serialization envelopes within cassette schema v1; replay never
+imports cassette-named types. Independent concurrent calls through wrapped
+Runnables are not supported yet. Exhaust or explicitly close streams so their
+recordings become replayable.
 
 ## Automatic Record and Replay
 

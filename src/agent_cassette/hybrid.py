@@ -224,6 +224,8 @@ class Hybrid:
         input: Any,
         *,
         metadata: dict[str, Any] | None = None,
+        serializer: Callable[[Any], Any] | None = None,
+        error_serializer: Callable[[Exception], Any] | None = None,
     ) -> tuple[bool, Any]:
         """Replay or inject a stream payload, or signal that a live stream is required."""
         normalized_type = self._event_type(event_type)
@@ -244,16 +246,32 @@ class Hybrid:
             if action is None:
                 return False, None
             if isinstance(action, Return):
+                stored_output = serializer(action.value) if serializer else action.value
                 self.recorder.add(
                     normalized_type,
                     name,
                     input=input,
-                    output=action.value,
+                    output=stored_output,
                     metadata=injection_metadata,
                     duration_ms=0.0,
                 )
-                return True, action.value
+                return True, stored_output
             error = action.error
+            if error_serializer is not None:
+                serialized_error = error_serializer(error)
+                error_metadata = dict(injection_metadata)
+                internal = dict(error_metadata.get(LINEAGE_METADATA_KEY, {}))
+                internal["call_type"] = normalized_type.value
+                error_metadata[LINEAGE_METADATA_KEY] = internal
+                self.recorder.add(
+                    EventType.ERROR,
+                    name,
+                    input=input,
+                    output=serialized_error,
+                    metadata=error_metadata,
+                    duration_ms=0.0,
+                )
+                raise error
             self.recorder.call(
                 normalized_type,
                 name,

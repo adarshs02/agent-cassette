@@ -63,3 +63,56 @@ jobs:
         with:
           name: distributions
           path: dist/
+
+  langchain-compatibility:
+    runs-on: ubuntu-latest
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compatibility: minimum
+            langchain-spec: "langchain-core==0.3.0"
+          - compatibility: current
+            langchain-spec: "langchain-core>=0.3,<2"
+    steps:
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.10.2"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - name: Smoke-test ${{ matrix.compatibility }} LangChain outside checkout
+        shell: bash
+        env:
+          LANGCHAIN_SPEC: ${{ matrix.langchain-spec }}
+        run: |
+          SMOKE_DIR="$RUNNER_TEMP/langchain-${{ matrix.compatibility }}"
+          uv venv "$SMOKE_DIR/venv" --python "3.13"
+          WHEELS=(dist/*.whl)
+          WHEEL="${WHEELS[0]}"
+          uv pip install --python "$SMOKE_DIR/venv/bin/python" "$WHEEL[langchain]" "$LANGCHAIN_SPEC"
+          cd "$SMOKE_DIR"
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/python" - <<'PY'
+          from pathlib import Path
+
+          from langchain_core.runnables import RunnableLambda
+
+          from agent_cassette import Cassette, wrap_langchain
+
+          path = Path("langchain.jsonl")
+          live = RunnableLambda(lambda value: {"answer": value["question"].upper()})
+
+          with Cassette.record(path) as cassette:
+              wrapped = wrap_langchain(live, cassette, name="ci.langchain")
+              assert wrapped.invoke({"question": "works"}) == {"answer": "WORKS"}
+
+          with Cassette.replay(path) as cassette:
+              wrapped = wrap_langchain(None, cassette, name="ci.langchain")
+              assert wrapped.invoke({"question": "works"}) == {"answer": "WORKS"}
+          PY

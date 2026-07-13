@@ -244,6 +244,43 @@ def test_async_replay_injection_and_live_suffix_match_sync_behavior(tmp_path):
     assert [event.output for event in load_events(output)] == ["one", "injected-two", "live-three"]
 
 
+def test_prepare_stream_serializer_is_once_and_optional(tmp_path):
+    source = tmp_path / "source.jsonl"
+    serialized_output = tmp_path / "serialized.jsonl"
+    plain_output = tmp_path / "plain.jsonl"
+    _source(source, outputs=("unused",))
+    action_value = {"value": "raw"}
+    rule = InjectionRule(Return(action_value), name="step-1")
+    calls = 0
+
+    def serialize(value):
+        nonlocal calls
+        calls += 1
+        return {"serialized": value}
+
+    with Hybrid(source, serialized_output, injections=(rule,)) as cassette:
+        replayed, value = cassette.prepare_stream(
+            EventType.TOOL_CALL,
+            "step-1",
+            {"index": 1},
+            serializer=serialize,
+        )
+        assert replayed is True
+        assert value == {"serialized": action_value}
+        assert load_events(serialized_output)[0].output == value
+    assert calls == 1
+
+    with Hybrid(
+        source,
+        plain_output,
+        injections=(InjectionRule(Return(action_value), name="step-1"),),
+    ) as cassette:
+        replayed, value = cassette.prepare_stream(EventType.TOOL_CALL, "step-1", {"index": 1})
+        assert replayed is True
+        assert value == action_value
+    assert load_events(plain_output)[0].output == action_value
+
+
 @dataclass
 class _Response:
     id: str

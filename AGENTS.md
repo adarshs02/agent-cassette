@@ -17,7 +17,7 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is 
 ## Bootstrap
 
 Install the exact locked development environment, including all optional provider
-integrations:
+and framework integrations:
 
 ```bash
 uv sync --frozen --all-extras

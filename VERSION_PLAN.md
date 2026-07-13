@@ -44,8 +44,7 @@ Ruff lint and format across `src tests examples`; mypy across 52 configured file
 wheel and sdist build; clean Python 3.13 wheel install outside checkout with
 `PYTHONPATH` removed; CLI help and doctor JSON smoke tests. All passed.
 
-Checkpoint commit: this version checkpoint commit; hash recorded in following
-durable status update and final report.
+Checkpoint commit: `2d345e7`
 
 ### Goal
 
@@ -122,17 +121,28 @@ agents, and expose actionable installation diagnostics.
 
 ## 0.12.0b1 — LangChain Runnable support
 
-Status: **planned**
+Status: **complete**
 
-Architecture decision: pending
+Architecture decision: lazy root API keeps core importable without LangChain. A
+`Runnable` subclass records one `CUSTOM` boundary event per method. Request matching
+uses serialized input, non-ephemeral config, kwargs, and batch flags. Decoder uses
+fixed code-owned LangChain class maps and version-1 envelopes only. Streaming uses
+provider-style finalize-on-exhaust/close/error wrappers. Schema remains v1.
 
-Assigned routes/subtasks: pending
+Assigned routes/subtasks: root Sol owns API/serialization/replay design. A
+Terra-equivalent `langchain_builder` owns integration implementation/tests. A
+Terra-equivalent `langchain_packaging` owns optional dependencies, lock, docs, and
+installed-wheel smoke coverage. Sol-equivalent reviewer audits final diff.
 
-Review attempts: 0/3
+Review attempts: 3/3 — final root Sol inspection found no material issues
 
-Validation evidence: pending
+Validation evidence: 152 pytest tests; Ruff lint/format across `src tests examples`;
+mypy across 54 configured files; lock check; wheel and sdist build; exact built-wheel
+record/invoke/offline replay outside checkout with `PYTHONPATH` removed on
+`langchain-core` 0.3.0 and 1.4.9. All passed.
 
-Checkpoint commit: pending
+Checkpoint commit: this version checkpoint commit; hash recorded in following
+durable status update and final report.
 
 ### Goal
 
