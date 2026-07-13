@@ -24,12 +24,10 @@ def test_agent(cassette):
         encoding="utf-8",
     )
     environment = os.environ.copy()
-    source_path = os.path.abspath("src")
-    environment["PYTHONPATH"] = os.pathsep.join(
-        part for part in (source_path, environment.get("PYTHONPATH", "")) if part
-    )
+    environment.pop("PYTHONPATH", None)
     command = [
         sys.executable,
+        "-I",
         "-m",
         "pytest",
         "-q",

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-cassette"
-version = "0.11.0b1"
+version = "0.11.1b1"
 description = "Deterministic record, replay, and trajectory diffing for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,11 +18,18 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Testing",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+dev = [
+  "build>=1.2",
+  "hatchling>=1.26",
+  "mypy>=1.11",
+  "pytest>=8",
+  "ruff>=0.5",
+]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.34"]
 agents = ["openai-agents>=0.1"]
@@ -44,6 +51,36 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = [".agents", ".codegraph"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src", "tests"]
+exclude = "(^|/)(\\.agents|\\.codegraph)/"
+check_untyped_defs = true
+warn_unused_configs = true
+
+# These modules predate the initial mypy gate. Keep the exclusions explicit so new
+# source and test modules are checked while the legacy typing debt is retired.
+[[tool.mypy.overrides]]
+module = [
+  "agent_cassette.cli",
+  "agent_cassette.hybrid",
+  "agent_cassette.interop.otlp",
+  "test_adapters",
+  "test_anthropic_integration",
+  "test_async_matching",
+  "test_automatic",
+  "test_beta_cli",
+  "test_hybrid",
+  "test_injection_advanced",
+  "test_openai_agents",
+  "test_openai_integration",
+  "test_record_replay",
+  "test_replay_advanced",
+  "test_streaming_spans",
+]
+ignore_errors = true

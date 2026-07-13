@@ -4,7 +4,7 @@
 
 Observability platforms show what happened. Agent Cassette reproduces what happened and makes the execution testable.
 
-> `0.11.0b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
+> `0.11.1b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
 
 ## Why Agent Cassette
 
@@ -26,8 +26,20 @@ Observability platforms show what happened. Agent Cassette reproduces what happe
 
 ## Install
 
+For a deterministic contributor or coding-agent setup from a fresh checkout:
+
 ```bash
-pip install -e ".[dev,all]"
+uv sync --frozen --all-extras
+uv run --frozen pytest
+```
+
+The committed `uv.lock` is the dependency source of truth. See `AGENTS.md` for the
+complete validation and package-smoke-test commands.
+
+For library use, install the core package or only the integrations you need:
+
+```bash
+pip install agent-cassette
 ```
 
 The core package has no runtime dependencies. Provider integrations are optional:
@@ -40,7 +52,7 @@ pip install "agent-cassette[agents]"
 
 ## Automatic Record and Replay
 
-Run an ordinary Python script without changing its OpenAI client construction:
+Run an ordinary Python script without changing supported provider client construction:
 
 ```bash
 agent-cassette record tests/cassettes/research.jsonl -- python research_agent.py
@@ -300,18 +312,24 @@ def test_agent(cassette):
 ```
 
 ```bash
-pytest --cassette-mode=record
-pytest --cassette-mode=replay
+uv run --frozen pytest --cassette-mode=record
+uv run --frozen pytest --cassette-mode=replay
 ```
 
 ## Other Commands
 
 ```bash
+agent-cassette doctor
+agent-cassette doctor --json
 agent-cassette inspect run.jsonl
 agent-cassette inspect run.jsonl --json
 agent-cassette migrate old.jsonl
 agent-cassette migrate old.jsonl --output upgraded.jsonl
 ```
+
+Missing optional integrations are reported but do not make the environment
+unhealthy. `doctor` exits with status `1` only when the core package or Python
+environment is unusable.
 
 ## Schema Migrations
 

@@ -16,6 +16,7 @@ from agent_cassette.assertions import (
     no_errors,
 )
 from agent_cassette.cassette import Cassette
+from agent_cassette.diagnostics import doctor
 from agent_cassette.diff import compare_cassettes
 from agent_cassette.events import EventType
 from agent_cassette.hybrid import Delay, Hybrid, InjectionRule, Raise, RateLimitError, Return
@@ -208,9 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_parser.add_argument("cassette", type=Path)
     migrate_parser.add_argument("--output", "-o", type=Path)
 
+    doctor_parser = subparsers.add_parser("doctor", help="diagnose installation and integrations")
+    doctor_parser.add_argument("--json", action="store_true", dest="as_json")
+
     for name, help_text in (
-        ("record", "run Python and record OpenAI calls"),
-        ("replay", "run Python with offline OpenAI replay"),
+        ("record", "run Python and record supported agent calls"),
+        ("replay", "run Python with offline agent-call replay"),
     ):
         run_parser = subparsers.add_parser(name, help=help_text)
         run_parser.add_argument("cassette", type=Path)
@@ -255,6 +259,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if parsed.command == "migrate":
         print(migrate_cassette(parsed.cassette, parsed.output))
         return 0
+    if parsed.command == "doctor":
+        return doctor(as_json=parsed.as_json)
     return _run(parsed)
 
 
