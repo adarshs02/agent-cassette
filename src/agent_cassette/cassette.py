@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from agent_cassette.hybrid import Hybrid, InjectionRule, MismatchPolicy
-from agent_cassette.matching import InputMatcher, MatchMode
+from agent_cassette.matching import DEFAULT_FUZZY_THRESHOLD, InputMatcher, MatchMode
 from agent_cassette.recorder import Recorder
 from agent_cassette.replay import Replayer
 
@@ -27,6 +27,7 @@ class Cassette:
         match: MatchMode = "exact",
         ignore_paths: tuple[str, ...] = (),
         matcher: InputMatcher | None = None,
+        fuzzy_threshold: float = DEFAULT_FUZZY_THRESHOLD,
     ) -> Replayer:
         """Create a replay context with configurable request matching."""
         return Replayer(
@@ -35,6 +36,7 @@ class Cassette:
             match=match,
             ignore_paths=ignore_paths,
             matcher=matcher,
+            fuzzy_threshold=fuzzy_threshold,
         )
 
     @staticmethod
@@ -48,6 +50,7 @@ class Cassette:
         match: MatchMode = "exact",
         ignore_paths: tuple[str, ...] = (),
         matcher: InputMatcher | None = None,
+        fuzzy_threshold: float = DEFAULT_FUZZY_THRESHOLD,
         redact_secrets: bool = True,
     ) -> Hybrid:
         """Replay a prefix, then record a live or fault-injected branch."""
@@ -60,5 +63,6 @@ class Cassette:
             match=match,
             ignore_paths=ignore_paths,
             matcher=matcher,
+            fuzzy_threshold=fuzzy_threshold,
             redact_secrets=redact_secrets,
         )

@@ -18,7 +18,7 @@ from agent_cassette.assertions import (
 from agent_cassette.cassette import Cassette
 from agent_cassette.diff import compare_cassettes
 from agent_cassette.events import EventType
-from agent_cassette.hybrid import Hybrid, InjectionRule, Raise, Return
+from agent_cassette.hybrid import Delay, Hybrid, InjectionRule, Raise, RateLimitError, Return
 from agent_cassette.interop import export_otlp, import_otlp
 from agent_cassette.migration import migrate_cassette
 from agent_cassette.reports import CIReport
@@ -85,6 +85,47 @@ def _required_check(value: str):
     return contains_event(EventType(event_type), name=name if separator else None)
 
 
+_ALLOWED_INJECTED_ERRORS: dict[str, type[Exception]] = {
+    "ConnectionError": ConnectionError,
+    "RateLimitError": RateLimitError,
+    "RuntimeError": RuntimeError,
+    "TimeoutError": TimeoutError,
+    "ValueError": ValueError,
+}
+
+
+def _parse_injection_action(item: dict[str, Any], *, nested: bool = False) -> Return | Raise | Delay:
+    action_name = item.get("action")
+    if action_name == "return":
+        return Return(item.get("value"))
+    if action_name == "raise":
+        error_name = str(item.get("error", "RuntimeError"))
+        if error_name not in _ALLOWED_INJECTED_ERRORS:
+            raise ValueError(f"unsupported injected error: {error_name}")
+        message = str(item.get("message", error_name))
+        if error_name == "RateLimitError":
+            retry_after = item.get("retry_after")
+            return Raise(
+                RateLimitError(
+                    message,
+                    retry_after=float(retry_after) if retry_after is not None else None,
+                )
+            )
+        return Raise(_ALLOWED_INJECTED_ERRORS[error_name](message))
+    if action_name == "delay" and not nested:
+        then_item = item.get("then")
+        then = None
+        if then_item is not None:
+            if not isinstance(then_item, dict):
+                raise ValueError("delay 'then' must be a JSON object")
+            then_action = _parse_injection_action(then_item, nested=True)
+            assert isinstance(then_action, (Return, Raise))
+            then = then_action
+        return Delay(float(item.get("seconds", 0)), then=then)
+    allowed = "'return' or 'raise'" if nested else "'return', 'raise', or 'delay'"
+    raise ValueError(f"injection action must be {allowed}")
+
+
 def _load_injections(path: Path | None) -> tuple[InjectionRule, ...]:
     if path is None:
         return ()
@@ -92,25 +133,10 @@ def _load_injections(path: Path | None) -> tuple[InjectionRule, ...]:
     if not isinstance(data, list):
         raise ValueError("injection file must contain a JSON list")
     rules = []
-    allowed_errors = {
-        "ConnectionError": ConnectionError,
-        "RuntimeError": RuntimeError,
-        "TimeoutError": TimeoutError,
-        "ValueError": ValueError,
-    }
     for item in data:
         if not isinstance(item, dict):
             raise ValueError("each injection rule must be a JSON object")
-        action_name = item.get("action")
-        if action_name == "return":
-            action = Return(item.get("value"))
-        elif action_name == "raise":
-            error_name = str(item.get("error", "RuntimeError"))
-            if error_name not in allowed_errors:
-                raise ValueError(f"unsupported injected error: {error_name}")
-            action = Raise(allowed_errors[error_name](str(item.get("message", error_name))))
-        else:
-            raise ValueError("injection action must be 'return' or 'raise'")
+        action = _parse_injection_action(item)
         rules.append(
             InjectionRule(
                 action,

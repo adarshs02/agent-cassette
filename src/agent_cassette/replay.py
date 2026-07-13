@@ -7,12 +7,31 @@ from pathlib import Path
 from typing import Any
 
 from agent_cassette.events import Event, EventType
-from agent_cassette.matching import InputMatcher, MatchMode, inputs_match, normalize_input
+from agent_cassette.matching import (
+    DEFAULT_FUZZY_THRESHOLD,
+    InputMatcher,
+    MatchMode,
+    inputs_match,
+    normalize_input,
+    validate_fuzzy_threshold,
+)
 from agent_cassette.storage import load_events
 
 
 class ReplayMismatchError(AssertionError):
     """Raised when execution no longer matches a cassette."""
+
+
+class RateLimitError(ConnectionError):
+    """Rate-limit-shaped error for deterministic resilience testing.
+
+    Subclasses ``ConnectionError`` so retry logic that handles transient
+    connection failures also handles injected rate limits.
+    """
+
+    def __init__(self, message: str = "rate limited", *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class RecordedCallError(RuntimeError):
@@ -35,12 +54,15 @@ class Replayer:
         match: MatchMode = "exact",
         ignore_paths: tuple[str, ...] = (),
         matcher: InputMatcher | None = None,
+        fuzzy_threshold: float = DEFAULT_FUZZY_THRESHOLD,
     ) -> None:
+        validate_fuzzy_threshold(fuzzy_threshold)
         self.path = Path(path)
         self.strict = strict
         self.match = match
         self.ignore_paths = ignore_paths
         self.matcher = matcher
+        self.fuzzy_threshold = fuzzy_threshold
         self.events = [event for event in load_events(path) if _is_replayable(event)]
         self.position = 0
         self._consumed: set[int] = set()
@@ -147,6 +169,7 @@ class Replayer:
             actual_input,
             mode=self.match,
             matcher=self.matcher,
+            fuzzy_threshold=self.fuzzy_threshold,
         ):
             return f"input changed from {expected_input!r} to {actual_input!r}"
         return None
@@ -154,6 +177,7 @@ class Replayer:
 
 _SAFE_EXCEPTIONS: dict[str, type[Exception]] = {
     "ConnectionError": ConnectionError,
+    "RateLimitError": RateLimitError,
     "RuntimeError": RuntimeError,
     "TimeoutError": TimeoutError,
     "ValueError": ValueError,

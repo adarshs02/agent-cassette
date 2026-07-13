@@ -34,6 +34,8 @@ def test_agent(cassette):
         "pytest",
         "-q",
         "-p",
+        "no:agent_cassette",
+        "-p",
         "agent_cassette.pytest_plugin",
         str(test_file),
     ]

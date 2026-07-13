@@ -9,7 +9,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from agent_cassette.automatic import OpenAIUnavailableError, patch_openai
+from agent_cassette.automatic import (
+    AnthropicUnavailableError,
+    OpenAIUnavailableError,
+    patch_anthropic,
+    patch_openai,
+)
 from agent_cassette.integrations.openai_agents import (
     OpenAIAgentsUnavailableError,
     patch_openai_agents,
@@ -44,7 +49,11 @@ def run_python(command: Sequence[str], cassette: Any) -> int:
     original_argv = sys.argv[:]
     original_path = sys.path[:]
     try:
-        with _optional_openai_patch(cassette), _optional_openai_agents_patch(cassette):
+        with (
+            _optional_openai_patch(cassette),
+            _optional_anthropic_patch(cassette),
+            _optional_openai_agents_patch(cassette),
+        ):
             if arguments[0] == "-m":
                 if len(arguments) < 2:
                     raise RunnerUsageError("'-m' requires a module name")
@@ -82,6 +91,20 @@ def _optional_openai_patch(cassette: Any) -> Iterator[None]:
         context = patch_openai(cassette)
         context.__enter__()
     except OpenAIUnavailableError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        context.__exit__(None, None, None)
+
+
+@contextmanager
+def _optional_anthropic_patch(cassette: Any) -> Iterator[None]:
+    try:
+        context = patch_anthropic(cassette)
+        context.__enter__()
+    except AnthropicUnavailableError:
         yield
         return
     try:

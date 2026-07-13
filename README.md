@@ -4,17 +4,20 @@
 
 Observability platforms show what happened. Agent Cassette reproduces what happened and makes the execution testable.
 
-> `0.10.0b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
+> `0.11.0b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
 
 ## Why Agent Cassette
 
 - Near-zero-instrumentation recording through the CLI
 - Offline replay for OpenAI Responses and Chat Completions
+- Offline replay for Anthropic Messages
 - OpenAI Agents lifecycle capture for agents, LLM boundaries, tools, and handoffs
 - Sync and async streaming capture
 - Durable JSONL writes, nested spans, and parallel-call replay matching
+- Exact, subset, normalized, and fuzzy request matching
 - Time-travel forks with replayed prefixes and live suffixes
-- Deterministic returned-value and exception injection
+- Deterministic returned-value, exception, latency, and rate-limit injection
+- Versioned schema migrations for older cassettes
 - Trajectory assertions, stable CI reports, and a reusable GitHub Action
 - Secure standalone HTML viewer with no scripts or network requests
 - OpenTelemetry/OpenInference JSON import and export
@@ -27,10 +30,11 @@ Observability platforms show what happened. Agent Cassette reproduces what happe
 pip install -e ".[dev,all]"
 ```
 
-The core package has no runtime dependencies. OpenAI integrations are optional:
+The core package has no runtime dependencies. Provider integrations are optional:
 
 ```bash
 pip install "agent-cassette[openai]"
+pip install "agent-cassette[anthropic]"
 pip install "agent-cassette[agents]"
 ```
 
@@ -59,6 +63,21 @@ response = client.responses.create(model="gpt-4.1-mini", input="Research agent t
 ```
 
 Replay validates the request and returns an inert, attribute-compatible response object without constructing a live client, using an API key, dynamically importing cassette-specified code, or making a network request. `AsyncOpenAI`, `chat.completions.create`, derived clients, and streaming iterators are supported.
+
+If the Anthropic SDK is installed, `Anthropic` and `AsyncAnthropic` clients are patched the same way. `messages.create` is recorded and replayed, including `stream=True` iterators:
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic()
+message = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Research agent testing"}],
+)
+```
+
+Python callers can also wrap clients explicitly with `wrap_anthropic` or patch constructors with `patch_anthropic`, mirroring `wrap_openai` and `patch_openai`.
 
 If the OpenAI Agents SDK is installed, `Runner.run`, `Runner.run_sync`, and `Runner.run_streamed` automatically receive lifecycle hooks. Agent starts and outputs, LLM boundaries, local tools, and handoffs become cassette events while existing user hooks continue to run.
 
@@ -101,6 +120,19 @@ Pass JSON rules to a fork:
     "name": "openai.responses.create",
     "action": "return",
     "value": {"output_text": "malformed fallback"}
+  },
+  {
+    "type": "model_call",
+    "action": "raise",
+    "error": "RateLimitError",
+    "message": "too many requests",
+    "retry_after": 30
+  },
+  {
+    "type": "tool_call",
+    "action": "delay",
+    "seconds": 2.5,
+    "then": {"action": "raise", "error": "TimeoutError", "message": "slow backend"}
   }
 ]
 ```
@@ -111,7 +143,7 @@ agent-cassette fork baseline.jsonl chaos.jsonl \
   -- python research_agent.py
 ```
 
-Rules are ordered and occurrence-based. Supported CLI exception types are `TimeoutError`, `ConnectionError`, `ValueError`, and `RuntimeError`. Python callers can use `InjectionRule`, `Return`, and `Raise` directly.
+Rules are ordered and occurrence-based. Supported CLI exception types are `TimeoutError`, `ConnectionError`, `RateLimitError`, `ValueError`, and `RuntimeError`. A `delay` action sleeps deterministically and then applies its optional `then` action or continues with the live call. Python callers can use `InjectionRule`, `Return`, `Raise`, `Delay`, and `RateLimitError` directly; `RateLimitError` subclasses `ConnectionError` and carries an optional `retry_after`.
 
 ## Matching Dynamic Requests
 
@@ -129,6 +161,18 @@ with Cassette.replay(
 ```
 
 Set `strict=False` to match any remaining event. This supports parallel calls that complete in a different order while still requiring every event to be consumed.
+
+Two tolerant match modes survive cosmetic prompt edits:
+
+```python
+with Cassette.replay("run.jsonl", match="normalized") as cassette:
+    ...  # whitespace and case differences in strings are ignored
+
+with Cassette.replay("run.jsonl", match="fuzzy", fuzzy_threshold=0.9) as cassette:
+    ...  # strings match when their similarity ratio meets the threshold
+```
+
+Both modes still require identical structure, keys, names, and non-string values; only string leaves are compared tolerantly.
 
 ## Trajectory Tests
 
@@ -269,6 +313,18 @@ agent-cassette migrate old.jsonl
 agent-cassette migrate old.jsonl --output upgraded.jsonl
 ```
 
+## Schema Migrations
+
+Cassette events carry a schema version. When a future release raises the schema version, registered migrations upgrade older events transparently on load, and `agent-cassette migrate` rewrites files in place:
+
+```python
+from agent_cassette import register_migration
+
+register_migration(1, upgrade_v1_to_v2)  # each migration advances exactly one version
+```
+
+Events newer than the installed release are rejected rather than silently misread.
+
 ## Architecture
 
 Each JSONL event includes a schema version, ID, timestamp, type, name, input, output, metadata, duration, optional cost, and parent/span relationships. The core remains provider-independent:
@@ -286,11 +342,11 @@ Each JSONL event includes a schema version, ID, timestamp, type, name, input, ou
 - Common authorization, API-key, token, password, and secret fields are redacted recursively.
 - Replayed failures restore only allowlisted built-in exceptions; unknown types become `RecordedCallError` rather than being dynamically imported.
 - Review cassettes before committing sensitive production data.
-- OpenAI streaming events are recorded when a stream is exhausted, fails, or is explicitly closed; partial chunks replay before a recorded stream failure is raised.
-- OpenAI `with_raw_response` and `with_streaming_response` transport helpers fail explicitly because their raw HTTP semantics cannot yet be replayed faithfully.
+- Provider streaming events are recorded when a stream is exhausted, fails, or is explicitly closed; partial chunks replay before a recorded stream failure is raised.
+- `with_raw_response` and `with_streaming_response` transport helpers fail explicitly because their raw HTTP semantics cannot yet be replayed faithfully. The Anthropic `messages.stream` helper is rejected in favor of `messages.create(stream=True)`.
 - Automatic CLI execution runs Python in-process so SDK constructor patching reaches user code; treat executed scripts as trusted code.
 - Voice, realtime, browser/computer streams, and distributed multi-process capture are not yet supported.
 
 ## Toward `1.0`
 
-The remaining stabilization work is schema migration across future versions, broader provider/framework adapters, multi-process ordering, richer pull-request annotations, and compatibility testing against supported SDK release ranges.
+The remaining stabilization work is broader provider/framework adapters (Gemini, Bedrock, LangChain), multi-process ordering, richer pull-request annotations, and compatibility testing against supported SDK release ranges.

@@ -13,17 +13,18 @@ from agent_cassette.assertions import (
     max_total_duration_ms,
     no_errors,
 )
-from agent_cassette.automatic import automatic_openai_from_env, patch_openai
+from agent_cassette.automatic import automatic_openai_from_env, patch_anthropic, patch_openai
 from agent_cassette.cassette import Cassette
 from agent_cassette.diff import DiffReport, compare_cassettes
-from agent_cassette.events import Event, EventType
-from agent_cassette.hybrid import Hybrid, InjectionRule, Raise, Return
+from agent_cassette.events import Event, EventType, register_migration, unregister_migration
+from agent_cassette.hybrid import Delay, Hybrid, InjectionRule, Raise, Return
+from agent_cassette.integrations.anthropic import wrap_anthropic
 from agent_cassette.integrations.mcp import wrap_mcp
 from agent_cassette.integrations.openai import wrap_openai
 from agent_cassette.integrations.openai_agents import AgentCassetteRunHooks, patch_openai_agents
 from agent_cassette.interop import export_otlp, import_otlp
-from agent_cassette.migration import migrate_cassette
-from agent_cassette.replay import RecordedCallError, ReplayMismatchError
+from agent_cassette.migration import migrate_cassette, migrate_event_dict
+from agent_cassette.replay import RateLimitError, RecordedCallError, ReplayMismatchError
 from agent_cassette.reports import CIReport
 from agent_cassette.viewer import render_viewer, write_viewer
 
@@ -35,12 +36,14 @@ __all__ = [
     "AssertionResult",
     "CIReport",
     "Cassette",
+    "Delay",
     "DiffReport",
     "Event",
     "EventType",
     "Hybrid",
     "InjectionRule",
     "Raise",
+    "RateLimitError",
     "RecordedCallError",
     "ReplayMismatchError",
     "Return",
@@ -56,10 +59,15 @@ __all__ = [
     "max_total_cost",
     "max_total_duration_ms",
     "migrate_cassette",
+    "migrate_event_dict",
     "no_errors",
+    "patch_anthropic",
     "patch_openai",
     "patch_openai_agents",
+    "register_migration",
     "render_viewer",
+    "unregister_migration",
+    "wrap_anthropic",
     "wrap_mcp",
     "wrap_openai",
     "write_viewer",

@@ -2,15 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
 from agent_cassette.events import Event, EventType
-from agent_cassette.matching import InputMatcher, MatchMode
+from agent_cassette.matching import DEFAULT_FUZZY_THRESHOLD, InputMatcher, MatchMode
 from agent_cassette.recorder import Recorder
-from agent_cassette.replay import Replayer, ReplayMismatchError
+from agent_cassette.replay import RateLimitError, Replayer, ReplayMismatchError
+
+__all__ = [
+    "Delay",
+    "Hybrid",
+    "HybridConfigurationError",
+    "HybridLiveCallError",
+    "InjectionRule",
+    "Raise",
+    "RateLimitError",
+    "Return",
+]
 
 Result = TypeVar("Result")
 MismatchPolicy = Literal["raise", "live"]
@@ -43,7 +56,25 @@ class Raise:
             raise HybridConfigurationError("Raise requires an Exception instance")
 
 
-InjectionAction = Return | Raise
+@dataclass(frozen=True, slots=True)
+class Delay:
+    """Sleep for a deterministic duration, then apply ``then`` or continue live."""
+
+    seconds: float
+    then: Return | Raise | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.seconds, bool)
+            or not isinstance(self.seconds, (int, float))
+            or self.seconds < 0
+        ):
+            raise HybridConfigurationError("Delay seconds must be a non-negative number")
+        if self.then is not None and not isinstance(self.then, (Return, Raise)):
+            raise HybridConfigurationError("Delay then-action must be Return, Raise, or None")
+
+
+InjectionAction = Return | Raise | Delay
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -64,8 +95,8 @@ class InjectionRule:
         name: str | None = None,
         occurrence: int = 1,
     ) -> None:
-        if not isinstance(action, (Return, Raise)):
-            raise HybridConfigurationError("InjectionRule action must be Return or Raise")
+        if not isinstance(action, (Return, Raise, Delay)):
+            raise HybridConfigurationError("InjectionRule action must be Return, Raise, or Delay")
         if event_type is not None and type is not None:
             raise HybridConfigurationError("Use either event_type or type, not both")
         selected_type = event_type if event_type is not None else type
@@ -99,6 +130,7 @@ class Hybrid:
         match: MatchMode = "exact",
         ignore_paths: tuple[str, ...] = (),
         matcher: InputMatcher | None = None,
+        fuzzy_threshold: float = DEFAULT_FUZZY_THRESHOLD,
         redact_secrets: bool = True,
     ) -> None:
         self.source = Path(source)
@@ -129,6 +161,7 @@ class Hybrid:
             match=match,
             ignore_paths=ignore_paths,
             matcher=matcher,
+            fuzzy_threshold=fuzzy_threshold,
         )
         self.recorder = Recorder(self.output, redact_secrets=redact_secrets)
         self._source_label = self.source.name
@@ -198,12 +231,18 @@ class Hybrid:
         if injection is not None:
             rule_index, action = injection
             self._live = True
+            delay_seconds = None
+            if isinstance(action, Delay):
+                delay_seconds = action.seconds
+                time.sleep(delay_seconds)
+                action = action.then
             injection_metadata = self._metadata(
                 metadata,
                 mode="injected",
-                rule=rule_index + 1,
-                action="return" if isinstance(action, Return) else "raise",
+                **self._injection_details(rule_index, action, delay_seconds),
             )
+            if action is None:
+                return False, None
             if isinstance(action, Return):
                 self.recorder.add(
                     normalized_type,
@@ -214,11 +253,12 @@ class Hybrid:
                     duration_ms=0.0,
                 )
                 return True, action.value
+            error = action.error
             self.recorder.call(
                 normalized_type,
                 name,
                 input,
-                lambda: _raise(action.error),
+                lambda: _raise(error),
                 metadata=injection_metadata,
             )
             raise AssertionError("injected failure unexpectedly returned")
@@ -259,27 +299,34 @@ class Hybrid:
         if injection is not None:
             rule_index, action = injection
             self._live = True
+            delay_seconds = None
+            if isinstance(action, Delay):
+                delay_seconds = action.seconds
+                time.sleep(delay_seconds)
+                action = action.then
             injection_metadata = self._metadata(
                 metadata,
                 mode="injected",
-                rule=rule_index + 1,
-                action="return" if isinstance(action, Return) else "raise",
+                **self._injection_details(rule_index, action, delay_seconds),
             )
-            if isinstance(action, Return):
-                return self.recorder.call(
-                    normalized_type,
-                    name,
-                    input,
-                    lambda: action.value,
-                    metadata=injection_metadata,
-                    cost=cost,
-                    serializer=serializer,
-                )
+            if action is None:
+                effect = self._require_live_function(normalized_type, name, function)
+            elif isinstance(action, Return):
+                value = action.value
+
+                def effect() -> Result:
+                    return value
+            else:
+                error = action.error
+
+                def effect() -> Result:
+                    return _raise(error)
+
             return self.recorder.call(
                 normalized_type,
                 name,
                 input,
-                lambda: _raise(action.error),
+                effect,
                 metadata=injection_metadata,
                 cost=cost,
                 serializer=serializer,
@@ -316,17 +363,28 @@ class Hybrid:
         if injection is not None:
             rule_index, action = injection
             self._live = True
+            delay_seconds = action.seconds if isinstance(action, Delay) else None
+            effective = action.then if isinstance(action, Delay) else action
             injection_metadata = self._metadata(
                 metadata,
                 mode="injected",
-                rule=rule_index + 1,
-                action="return" if isinstance(action, Return) else "raise",
+                **self._injection_details(rule_index, effective, delay_seconds),
+            )
+            live_function = (
+                self._require_live_function(normalized_type, name, function)
+                if effective is None
+                else None
             )
 
             async def inject() -> Result:
-                if isinstance(action, Raise):
-                    raise action.error
-                return action.value
+                if delay_seconds:
+                    await asyncio.sleep(delay_seconds)
+                if live_function is not None:
+                    return await live_function()
+                if isinstance(effective, Raise):
+                    raise effective.error
+                assert isinstance(effective, Return)
+                return effective.value
 
             return await self.recorder.acall(
                 normalized_type,
@@ -425,6 +483,21 @@ class Hybrid:
         lineage.update({"mode": mode, "source": self._source_label, **details})
         combined[LINEAGE_METADATA_KEY] = lineage
         return combined
+
+    @staticmethod
+    def _injection_details(
+        rule_index: int, action: Return | Raise | None, delay_seconds: float | None
+    ) -> dict[str, Any]:
+        if action is None:
+            label = "delay"
+        elif isinstance(action, Return):
+            label = "return"
+        else:
+            label = "raise"
+        details: dict[str, Any] = {"rule": rule_index + 1, "action": label}
+        if delay_seconds is not None:
+            details["delay_seconds"] = delay_seconds
+        return details
 
     @staticmethod
     def _event_type(event_type: EventType | str) -> EventType:
