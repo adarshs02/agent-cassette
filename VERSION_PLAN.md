@@ -141,8 +141,7 @@ mypy across 54 configured files; lock check; wheel and sdist build; exact built-
 record/invoke/offline replay outside checkout with `PYTHONPATH` removed on
 `langchain-core` 0.3.0 and 1.4.9. All passed.
 
-Checkpoint commit: this version checkpoint commit; hash recorded in following
-durable status update and final report.
+Checkpoint commit: `c1e4db8`
 
 ### Goal
 
@@ -236,15 +235,28 @@ sync, async, streaming, and batch APIs.
 
 ## 0.12.1b1 — LangChain lifecycle tracing
 
-Status: **planned**
+Status: **complete**
 
-Architecture decision: pending
+Architecture decision: lazy `langchain_callback_handler(cassette)` returns a
+BaseCallbackHandler implementation. One terminal `CUSTOM` event represents each
+run, with `_agent_cassette.observational=true`, `span_id=run_id`, and
+`parent_id=parent_run_id`; replay filters only that exact flag. Recorder uses an
+instance `RLock` around append/event/save mutation. Parser classification is
+best-effort from fixed metadata/name hints. Handler is a no-op on replay.
 
-Assigned routes/subtasks: pending
+Assigned routes/subtasks: root Sol owns lifecycle/dedup/concurrency semantics.
+Terra-equivalent `lifecycle_builder` owns handler, recorder/replay changes, and
+tests. Terra-equivalent `lifecycle_packaging` owns version/docs/lock/CI smoke.
+Sol-equivalent reviewer audits final diff.
 
-Review attempts: 0/3
+Review attempts: 1/3. The reviewer requested explicit async concurrent nested
+hierarchy coverage; Terra added it. The final Sol-equivalent review found no
+material issues.
 
-Validation evidence: pending
+Validation evidence: 162 tests passed; Ruff lint and format checks passed; mypy
+passed across 56 files; frozen lock check passed; wheel and sdist built; installed
+wheel CLI and `doctor --json` smokes passed outside the checkout; installed-wheel
+record/offline-replay callback smokes passed with LangChain Core 0.3.0 and 1.4.9.
 
 Checkpoint commit: pending
 

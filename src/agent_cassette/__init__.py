@@ -36,6 +36,15 @@ def wrap_langchain(runnable, cassette, *, name="langchain.runnable"):
     return _wrap_langchain(runnable, cassette, name=name)
 
 
+def langchain_callback_handler(cassette):
+    """Create lifecycle tracing callbacks without making LangChain a core dependency."""
+    from agent_cassette.integrations.langchain_callbacks import (
+        langchain_callback_handler as _langchain_callback_handler,
+    )
+
+    return _langchain_callback_handler(cassette)
+
+
 __all__ = [
     "Adapter",
     "AdapterRegistry",
@@ -64,6 +73,7 @@ __all__ = [
     "event_sequence",
     "export_otlp",
     "import_otlp",
+    "langchain_callback_handler",
     "max_total_cost",
     "max_total_duration_ms",
     "migrate_cassette",

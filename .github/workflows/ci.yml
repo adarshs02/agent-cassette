@@ -103,16 +103,18 @@ jobs:
 
           from langchain_core.runnables import RunnableLambda
 
-          from agent_cassette import Cassette, wrap_langchain
+          from agent_cassette import Cassette, langchain_callback_handler, wrap_langchain
 
           path = Path("langchain.jsonl")
           live = RunnableLambda(lambda value: {"answer": value["question"].upper()})
 
           with Cassette.record(path) as cassette:
               wrapped = wrap_langchain(live, cassette, name="ci.langchain")
-              assert wrapped.invoke({"question": "works"}) == {"answer": "WORKS"}
+              config = {"callbacks": [langchain_callback_handler(cassette)]}
+              assert wrapped.invoke({"question": "works"}, config=config) == {"answer": "WORKS"}
 
           with Cassette.replay(path) as cassette:
               wrapped = wrap_langchain(None, cassette, name="ci.langchain")
-              assert wrapped.invoke({"question": "works"}) == {"answer": "WORKS"}
+              config = {"callbacks": [langchain_callback_handler(cassette)]}
+              assert wrapped.invoke({"question": "works"}, config=config) == {"answer": "WORKS"}
           PY

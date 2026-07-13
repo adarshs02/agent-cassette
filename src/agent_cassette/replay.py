@@ -195,6 +195,9 @@ def _call_type(event: Event) -> EventType:
 
 
 def _is_replayable(event: Event) -> bool:
+    internal = event.metadata.get("_agent_cassette", {})
+    if isinstance(internal, dict) and internal.get("observational") is True:
+        return False
     return event.type != EventType.ERROR or _call_type(event) != EventType.ERROR
 
 

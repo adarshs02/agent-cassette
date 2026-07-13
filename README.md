@@ -4,7 +4,7 @@
 
 Observability platforms show what happened. Agent Cassette reproduces what happened and makes the execution testable.
 
-> `0.12.0b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
+> `0.12.1b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
 
 ## Why Agent Cassette
 
@@ -12,6 +12,7 @@ Observability platforms show what happened. Agent Cassette reproduces what happe
 - Offline replay for OpenAI Responses and Chat Completions
 - Offline replay for Anthropic Messages
 - OpenAI Agents lifecycle capture for agents, LLM boundaries, tools, and handoffs
+- Optional LangChain lifecycle tracing with nested chain, model, retriever, parser, and tool spans
 - Sync and async streaming capture
 - Durable JSONL writes, nested spans, and parallel-call replay matching
 - Exact, subset, normalized, and fuzzy request matching
@@ -74,9 +75,39 @@ with Cassette.replay("chain.jsonl") as cassette:
 `invoke`, `ainvoke`, `stream`, `astream`, `batch`, and `abatch` are supported.
 Replay with `None` never constructs or calls a live Runnable. LangChain values use
 safe, code-owned serialization envelopes within cassette schema v1; replay never
-imports cassette-named types. Independent concurrent calls through wrapped
-Runnables are not supported yet. Exhaust or explicitly close streams so their
-recordings become replayable.
+imports cassette-named types. Recorder instances support independent concurrent
+top-level calls; sharing one Replayer across concurrent calls remains unsupported.
+Exhaust or explicitly close streams so their recordings become replayable.
+
+### LangChain lifecycle tracing
+
+Add an optional callback handler when you want framework-level trace spans as well
+as a replayable Runnable boundary:
+
+```python
+from agent_cassette import Cassette, langchain_callback_handler, wrap_langchain
+
+chain = prompt | model | parser
+
+with Cassette.record("chain.jsonl") as cassette:
+    handler = langchain_callback_handler(cassette)
+    recorded = wrap_langchain(chain, cassette, name="research.chain")
+    result = recorded.invoke(
+        {"topic": "agent testing"},
+        config={"callbacks": [handler]},
+    )
+```
+
+Put existing application handlers in the same `callbacks` list. Agent Cassette
+preserves LangChain run IDs as span IDs and parent run IDs as parent IDs. It emits
+one terminal lifecycle event for each chain, model, retriever, parser, or tool run,
+including failed runs and sync, async, and streaming execution.
+
+Lifecycle events carry `metadata["_agent_cassette"]["observational"] == true`.
+Replay matching skips only events with that exact marker, so traces do not duplicate
+provider boundaries or disturb deterministic offline replay. The handler is inert
+with a replay cassette; use `wrap_langchain(None, cassette, ...)` to replay results
+without constructing or calling a live provider.
 
 ## Automatic Record and Replay
 
@@ -395,4 +426,4 @@ Each JSONL event includes a schema version, ID, timestamp, type, name, input, ou
 
 ## Toward `1.0`
 
-The remaining stabilization work is broader provider/framework adapters (Gemini, Bedrock, LangChain), multi-process ordering, richer pull-request annotations, and compatibility testing against supported SDK release ranges.
+The remaining stabilization work is broader provider/framework adapters (Gemini and Bedrock), multi-process ordering, richer pull-request annotations, and compatibility testing against supported SDK release ranges.
