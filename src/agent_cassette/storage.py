@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
+from tempfile import NamedTemporaryFile
 
 from agent_cassette.events import Event
 
@@ -29,10 +31,39 @@ def load_events(path: str | Path) -> list[Event]:
     return events
 
 
-def save_events(path: str | Path, events: Iterable[Event]) -> None:
-    """Write events atomically enough for local test workflows."""
+def append_event(path: str | Path, event: Event) -> None:
+    """Append and flush one event so completed calls survive process failure."""
     cassette_path = Path(path)
     cassette_path.parent.mkdir(parents=True, exist_ok=True)
-    with cassette_path.open("w", encoding="utf-8") as cassette_file:
-        for event in events:
-            cassette_file.write(json.dumps(event.to_dict(), sort_keys=True, default=str) + "\n")
+    with cassette_path.open("a", encoding="utf-8") as cassette_file:
+        cassette_file.write(_event_line(event))
+        cassette_file.flush()
+        os.fsync(cassette_file.fileno())
+
+
+def save_events(path: str | Path, events: Iterable[Event]) -> None:
+    """Atomically replace a cassette with the supplied events."""
+    cassette_path = Path(path)
+    cassette_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=cassette_path.parent,
+            prefix=f".{cassette_path.name}.",
+            delete=False,
+        ) as cassette_file:
+            temporary_path = Path(cassette_file.name)
+            for event in events:
+                cassette_file.write(_event_line(event))
+            cassette_file.flush()
+            os.fsync(cassette_file.fileno())
+        temporary_path.replace(cassette_path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _event_line(event: Event) -> str:
+    return json.dumps(event.to_dict(), sort_keys=True, default=str) + "\n"
