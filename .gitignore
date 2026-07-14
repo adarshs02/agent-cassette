@@ -9,3 +9,8 @@ build/
 *.egg-info/
 repomix-output.*
 examples/research_agent/*.jsonl
+
+# Local agent / editor tooling — machine-local, not for origin
+.codegraph/
+.agents/
+skills-lock.json
