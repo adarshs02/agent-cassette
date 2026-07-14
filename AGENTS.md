@@ -20,10 +20,52 @@ Install the exact locked development environment, including all optional provide
 and framework integrations:
 
 ```bash
-uv sync --frozen --all-extras
+uv sync --frozen --all-extras --dev
 ```
 
 Do not set `PYTHONPATH`. The project is installed into the uv environment.
+
+## Consumer project initialization
+
+From an installed wheel, a coding agent can safely preview, apply, and verify
+Agent Cassette scaffolding in a consumer repository:
+
+```bash
+agent-cassette init . --detect --dry-run --json
+agent-cassette init . --detect --json
+agent-cassette init . --detect --check --json
+pytest tests/test_agent_cassette_smoke.py
+```
+
+These commands never install dependencies, modify dependency manifests, execute
+consumer code, discover secrets, or write API keys. A repeated normal init is
+idempotent only when every generated file matches exactly; init never updates a
+different existing scaffold. Treat exit 1 from `--check` as "changes needed" and
+exit 2 from any init mode as invalid or conflicting state. A successful dry run
+returns 0 and writes nothing.
+
+`.agent-cassette.toml` supplies the default cassette directory, match mode, and
+strictness for the `cassette` pytest fixture. Per-test `cassette` marker arguments
+override those defaults. The replay CLI uses configured match and strict defaults
+when flags do not override them, but always requires an explicit cassette path.
+Static detection recognizes `pytest` and `unittest` as test frameworks.
+It stores them in `test_frameworks`, separate from integration `frameworks` such as
+`langchain`. Read-only config loading and pytest/replay runtime defaults are portable
+on supported Python platforms. Mutating initialization uses required
+directory-relative, no-follow filesystem primitives and fails closed when the
+platform lacks them.
+Static manifest parse failures are warnings; do not execute project code to infer
+the missing dependency information.
+
+## On-demand repository snapshot
+
+Generate a single-file Repomix snapshot only when an agent needs one:
+
+```bash
+npx repomix --output repomix-output.xml
+```
+
+`repomix-output.xml` is ignored. Never commit the generated snapshot.
 
 ## Validation
 
@@ -70,7 +112,8 @@ uv pip install --python "$SMOKE_DIR/venv/bin/python" dist/*.whl
 - Never dynamically import a type named by cassette data.
 - Preserve cassette schema compatibility; add an explicit one-version migration
   when a schema change is unavoidable.
-- Keep optional integrations optional and the core dependency-free.
+- Keep optional integrations optional. Core uses only the standard library on
+  Python 3.11+ and the `tomli` compatibility reader on Python 3.10.
 - Keep generated cassettes, credentials, build products, and virtual environments
   out of commits unless a reviewed test fixture intentionally requires them.
 - Treat `.agents/` as vendored tooling; do not include it in project lint or type

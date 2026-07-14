@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_cassette.assertions import (
     check_trajectory,
@@ -21,7 +22,14 @@ from agent_cassette.diff import compare_cassettes
 from agent_cassette.events import EventType
 from agent_cassette.hybrid import Delay, Hybrid, InjectionRule, Raise, RateLimitError, Return
 from agent_cassette.interop import export_otlp, import_otlp
+from agent_cassette.matching import MatchMode
 from agent_cassette.migration import migrate_cassette
+from agent_cassette.project_init import (
+    ProjectInitError,
+    initialize_project,
+    load_project_config_from_root,
+    render_init_report,
+)
 from agent_cassette.reports import CIReport
 from agent_cassette.runner import run_python, validate_python_command
 from agent_cassette.storage import load_events, save_events
@@ -156,7 +164,28 @@ def _run(parsed: argparse.Namespace) -> int:
     if parsed.command == "record":
         context = Cassette.record(parsed.cassette)
     elif parsed.command == "replay":
-        context = Cassette.replay(parsed.cassette)
+        try:
+            loaded = load_project_config_from_root(Path.cwd())
+        except ProjectInitError as error:
+            print(f"Invalid project configuration: {error}", file=sys.stderr)
+            return 2
+        config = loaded[0] if loaded is not None else None
+        if loaded is not None:
+            for warning in loaded[1]:
+                print(f"Configuration warning: {warning}", file=sys.stderr)
+        strict = (
+            parsed.replay_strict
+            if parsed.replay_strict is not None
+            else config.strict
+            if config is not None
+            else True
+        )
+        match_value = parsed.match or (config.match if config is not None else "exact")
+        context = Cassette.replay(
+            parsed.cassette,
+            strict=strict,
+            match=cast(MatchMode, match_value),
+        )
     else:
         context = Hybrid(
             parsed.source,
@@ -212,11 +241,42 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = subparsers.add_parser("doctor", help="diagnose installation and integrations")
     doctor_parser.add_argument("--json", action="store_true", dest="as_json")
 
+    init_parser = subparsers.add_parser("init", help="initialize Agent Cassette in a project")
+    init_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    init_parser.add_argument(
+        "--detect", action="store_true", help="detect integrations from Python manifests"
+    )
+    init_mode = init_parser.add_mutually_exclusive_group()
+    init_mode.add_argument("--check", action="store_true", help="check without writing")
+    init_mode.add_argument("--dry-run", action="store_true", help="preview without writing")
+    init_parser.add_argument("--json", action="store_true", dest="as_json")
+
     for name, help_text in (
         ("record", "run Python and record supported agent calls"),
         ("replay", "run Python with offline agent-call replay"),
     ):
         run_parser = subparsers.add_parser(name, help=help_text)
+        if name == "replay":
+            run_parser.add_argument(
+                "--match",
+                choices=("exact", "subset", "normalized", "fuzzy"),
+                default=None,
+                help="override project replay matching",
+            )
+            strict_group = run_parser.add_mutually_exclusive_group()
+            strict_group.add_argument(
+                "--strict",
+                action="store_true",
+                dest="replay_strict",
+                help="require all cassette events to be consumed",
+            )
+            strict_group.add_argument(
+                "--no-strict",
+                action="store_false",
+                dest="replay_strict",
+                help="allow unconsumed cassette events",
+            )
+            run_parser.set_defaults(replay_strict=None)
         run_parser.add_argument("cassette", type=Path)
         run_parser.add_argument("python_command", nargs=argparse.REMAINDER)
 
@@ -261,6 +321,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 0
     if parsed.command == "doctor":
         return doctor(as_json=parsed.as_json)
+    if parsed.command == "init":
+        mode = "check" if parsed.check else "dry-run" if parsed.dry_run else "apply"
+        report, exit_code = initialize_project(parsed.project, detect=parsed.detect, mode=mode)
+        print(render_init_report(report, as_json=parsed.as_json))
+        return exit_code
     return _run(parsed)
 
 

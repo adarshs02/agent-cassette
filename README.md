@@ -4,7 +4,7 @@
 
 Observability platforms show what happened. Agent Cassette reproduces what happened and makes the execution testable.
 
-> `0.12.1b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
+> `0.14.0b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
 
 ## Why Agent Cassette
 
@@ -30,12 +30,19 @@ Observability platforms show what happened. Agent Cassette reproduces what happe
 For a deterministic contributor or coding-agent setup from a fresh checkout:
 
 ```bash
-uv sync --frozen --all-extras
+uv sync --frozen --all-extras --dev
 uv run --frozen pytest
 ```
 
 The committed `uv.lock` is the dependency source of truth. See `AGENTS.md` for the
 complete validation and package-smoke-test commands.
+
+When an agent needs a single-file repository snapshot, generate it on demand. The
+output is ignored and must not be committed:
+
+```bash
+npx repomix --output repomix-output.xml
+```
 
 For library use, install the core package or only the integrations you need:
 
@@ -43,8 +50,8 @@ For library use, install the core package or only the integrations you need:
 pip install agent-cassette
 ```
 
-The core package has no runtime dependencies. Provider and framework integrations
-are optional:
+The core package uses only the standard library on Python 3.11 and newer, and the
+`tomli` TOML reader on Python 3.10. Provider and framework integrations are optional:
 
 ```bash
 pip install "agent-cassette[openai]"
@@ -52,6 +59,96 @@ pip install "agent-cassette[anthropic]"
 pip install "agent-cassette[agents]"
 pip install "agent-cassette[langchain]"
 ```
+
+## Agent-first initialization
+
+Initialize an existing Python project without changing its dependency manifests or
+running project code:
+
+```bash
+cd your-project
+agent-cassette init --detect
+pytest tests/test_agent_cassette_smoke.py
+```
+
+Detection statically inspects `pyproject.toml`, `requirements*.txt`, `setup.cfg`,
+and `setup.py`. Supported provider tokens are `anthropic`, `mcp`, `openai`, and
+`openai-agents`. Framework detection recognizes `langchain` plus the `pytest` and
+`unittest` test frameworks using static project evidence. Results are sorted for
+deterministic reviews. Detection does not import the project, discover secrets,
+install dependencies, or modify a dependency manifest. A manifest that cannot be
+parsed produces a warning instead of executing or guessing from it.
+
+The initializer creates only these owned scaffolds:
+
+- `.agent-cassette.toml`, the project configuration
+- `<cassette_dir>/.gitkeep`, preserving the configured cassette fixture directory
+- `tests/test_agent_cassette_smoke.py`, an entirely offline record/replay test
+
+Cassette fixtures remain tracked. Initialization does not create or edit
+`.gitignore` because it generates no transient viewer output.
+
+Initialization creates only missing scaffold files. Byte-for-byte matches make
+repeated initialization a no-op; any different existing scaffold is a conflict and
+is never overwritten, even if it contains an Agent Cassette marker from an earlier
+version.
+
+Writes use directory-relative, no-follow filesystem operations and revalidate path
+components while applying the preflighted plan. Mutating initialization fails closed
+when the platform does not provide the required dirfd/no-follow primitives.
+Read-only `.agent-cassette.toml` loading and its pytest/replay runtime defaults remain
+portable on supported Python platforms. Symlinked roots, parents, and targets are
+rejected during initialization.
+
+The schema-version-1 configuration supports these keys:
+
+```toml
+schema_version = 1
+cassette_dir = "tests/cassettes"
+match = "exact"
+strict = true
+providers = ["openai"]
+frameworks = ["langchain"]
+test_frameworks = ["pytest"]
+```
+
+`schema_version` must be `1`; `cassette_dir` is a project-relative path; `match` is
+one of `exact`, `subset`, `normalized`, or `fuzzy`; `strict` is a boolean; and
+`providers`, `frameworks`, and `test_frameworks` are sorted arrays of their
+supported tokens above. `frameworks` contains integrations such as `langchain`;
+test runners remain separate in `test_frameworks`. Future schema versions and
+invalid known values are rejected. Unknown keys are preserved and reported with a
+warning for forward compatibility.
+
+The `cassette` pytest fixture reads `cassette_dir`, `match`, and `strict` from this
+file. A `@pytest.mark.cassette(...)` marker can override the cassette filename,
+`match`, or `strict` for one test; relative filenames remain under `cassette_dir`.
+
+The replay CLI also uses `match` and `strict` from `.agent-cassette.toml` when a
+command-line override is not supplied. Replay still requires an explicit cassette
+path; `cassette_dir` does not silently choose a CLI cassette:
+
+```bash
+agent-cassette replay tests/cassettes/research.jsonl -- python research_agent.py
+```
+
+Coding agents can preview, apply, and verify setup with machine-readable output:
+
+```bash
+agent-cassette init . --detect --dry-run --json
+agent-cassette init . --detect --json
+agent-cassette init . --detect --check --json
+```
+
+The versioned JSON envelope contains `schema_version`, `command`, `mode`, `project`,
+`detect`, `detected`, `actions`, `status`, `warnings`, `error`, and `next_steps`.
+`detected` separates `providers`, `frameworks`, and `test_frameworks`.
+Each action reports its project-relative `path`, `status`, and optional `reason`.
+`--dry-run` previews a valid, conflict-free plan and exits 0 without writing; it
+exits 2 for invalid or conflicting state. `--check` exits 0 when scaffolding is
+current, 1 when changes are needed, and 2 for invalid or conflicting state; it also
+never writes. Normal initialization exits 0 on success and 2 on invalid or
+conflicting state. `--check` and `--dry-run` are mutually exclusive.
 
 ## LangChain Runnables
 

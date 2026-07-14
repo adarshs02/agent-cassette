@@ -2,490 +2,445 @@
 
 Target: `1.0.0`
 
-This file is durable release state. Versions execute sequentially. A version may be
-marked complete only after its implementation, complete validation suite, Sol-level
-review, review fixes, version synchronization, and Git checkpoint all finish.
+This roadmap supersedes the earlier prerelease numbering. Versions execute in the
+order below. Historical commits are retained as implementation checkpoints; release
+metadata must be synchronized to the new labels before each corresponding version is
+declared complete.
 
-## Global invariants
+## Durable release rules
 
 - Preserve deterministic offline replay and recursive secret redaction.
-- Never import a type named by cassette data. Replay reconstruction uses only a
-  code-owned allowlist.
-- Preserve schema compatibility. Raise `SCHEMA_VERSION` only when existing JSONL
-  event structure cannot represent a feature.
-- Preserve unrelated user changes and never push, publish, merge, or create a
-  remote release.
-- Use `uv.lock` as the dependency lock and `uv sync --frozen --all-extras` as the
-  canonical development setup. All release commands use `uv run --frozen`.
-- Required release gates: full pytest suite, Ruff lint and formatting, configured
-  mypy type checking, wheel and sdist builds, installed-wheel CLI smoke tests, and
-  clean Git status. Builds use the locked Hatchling environment with
-  `uv build --no-build-isolation`.
-- Each release gets one coherent checkpoint commit before the next starts.
-- Artifact smoke tests run outside the checkout with `PYTHONPATH` removed.
+- Never import or execute a type named by cassette data. Replay reconstruction uses
+  only code-owned allowlists.
+- Preserve schema compatibility and provide explicit migrations when a schema change
+  is unavoidable.
+- Preserve unrelated user changes. Do not push, publish, merge, or create remote
+  releases.
+- Use `uv.lock`. The contributor bootstrap is `uv sync --all-extras --dev`; release
+  validation additionally verifies frozen lock use.
+- Required gates are the full pytest suite, Ruff lint and format checks, mypy, wheel
+  and source-distribution builds, clean installed-wheel smoke tests outside the
+  checkout with `PYTHONPATH` removed, and Sol-level review.
+- Commit each version as a coherent local Git checkpoint before starting the next.
+- Generate Repomix snapshots on demand. Do not commit generated Repomix snapshots.
 
-## 0.11.1b1 — Seamless setup
+## Renumbering state
 
-Status: **complete**
+The following implementation checkpoints were created under the superseded working
+labels and are preserved without rewriting Git history:
 
-Architecture decision: diagnostics live in a dependency-free `diagnostics.py` and
-use `importlib.metadata` / `importlib.util.find_spec` only; CLI renders schema-v1
-data. Build/setup uses locked uv commands, an installed-package subprocess test,
-and artifact smoke tests outside the checkout. No schema or runtime API changes.
+| New roadmap version | Implemented work | Historical checkpoint |
+| --- | --- | --- |
+| `0.12.0b1` | Agent-friendly setup and diagnostics | `2d345e7` (formerly `0.11.1b1`) |
+| `0.13.0b1` | LangChain Runnable replay | `c1e4db8` (formerly `0.12.0b1`) |
+| `0.13.0b2` | LangChain lifecycle tracing | `7680e74` (formerly `0.12.1b1`) |
 
-Assigned routes/subtasks: Terra-equivalent `doctor_builder` owns diagnostics, CLI,
-and focused tests. Terra-equivalent `setup_builder` owns dependency/build metadata,
-lockfile, AGENTS/README/CI, and fresh-checkout tests. Root Sol integrates and reviews.
+The roadmap status below distinguishes implemented functionality from final release
+label synchronization.
 
-Review attempts: 3/3 — final Sol-equivalent review found no material issues
+## 0.12.0b1 — Agent-friendly setup
 
-Validation evidence: `uv lock --check`; frozen all-extras sync; 117 pytest tests;
-Ruff lint and format across `src tests examples`; mypy across 52 configured files;
-wheel and sdist build; clean Python 3.13 wheel install outside checkout with
-`PYTHONPATH` removed; CLI help and doctor JSON smoke tests. All passed.
+Status: **complete via mapped historical checkpoint `2d345e7`**
 
-Checkpoint commit: `2d345e7`
+Goal: make a fresh checkout immediately usable by a human or coding agent.
 
-### Goal
+Included work:
 
-Make a fresh checkout deterministic and self-describing for humans and coding
-agents, and expose actionable installation diagnostics.
+- Dependency lockfile and canonical `uv` workflow.
+- Development build dependencies.
+- Root `AGENTS.md` with exact setup, test, lint, type-check, and build commands.
+- Tests that work without manual `PYTHONPATH` changes.
+- `agent-cassette doctor` and `agent-cassette doctor --json`.
+- Dependency and provider detection with actionable diagnostics.
+- Provider-neutral CLI descriptions.
+- Clean-install CI, wheel validation, and source-distribution validation.
+- Improved installation documentation.
+- On-demand Repomix generation instead of committed snapshots.
 
-### Included work
+Explicit exclusions:
 
-- Add and commit `uv.lock`.
-- Define deterministic development, lint, format, type-check, test, and build
-  commands.
-- Add root `AGENTS.md` with exact commands and repository-specific safety rules.
-- Ensure tests run after fresh setup without manual `PYTHONPATH` changes.
-- Add `agent-cassette doctor` with stable human output and deterministic JSON.
-- Report Python/package state and availability of OpenAI, Anthropic, OpenAI Agents,
-  MCP, and LangChain-related modules without importing optional packages.
-- Make CLI descriptions provider-neutral.
-- Add clean-install and package-build CI.
-- Keep vendored `.agents/` tools outside project lint/type-check scopes.
-- Add mypy as the repository type checker and define its exact checked paths.
-- Remove subprocess-test `PYTHONPATH` injection; exercise installed package state
-  from a working directory outside the checkout.
-
-### Explicit exclusions
-
-- No project scaffolding or configuration file; those belong to `0.13.0b1`.
 - No LangChain execution integration.
-- No cassette schema change.
-- No automated package installation from `doctor`.
+- No consumer-project initializer.
+- No automatic dependency installation by `doctor`.
 
-### Dependencies
+Dependencies:
 
-- Existing Hatchling build backend.
-- `uv` for lock and deterministic contributor setup.
-- Standard-library discovery APIs for diagnostics.
+- Hatchling build backend.
+- `uv` for environment and lock management.
+- Standard-library package discovery for diagnostics.
 
-### Compatibility and migration risks
+Compatibility and migration risks:
 
-- Lock generation must cover supported Python 3.10–3.13 without narrowing current
-  runtime compatibility.
-- Add Python 3.13 classifier and CI coverage to match the supported matrix.
-- Doctor JSON schema v1 is `{schema_version, package, python, integrations,
-  healthy}` with sorted keys. `package` reports distribution version/install state;
-  `python` reports version/supported; each integration reports `supported`,
-  `distribution`, and `installed`. OpenAI Agents maps distribution
-  `openai-agents` to import `agents`; MCP reports built-in support separately from
-  optional SDK discovery. Human and JSON modes write data only to stdout,
-  diagnostics only to stderr, and return 0 when core environment is healthy or 1
-  when Python/package state is unusable. Missing optional integrations are healthy.
-- CI must install the built wheel, not accidentally import from the checkout.
+- The lock must resolve across supported Python versions.
+- Clean-install tests must import the installed artifact, not the checkout.
+- Doctor output and exit codes must stay deterministic and provider-neutral.
+- Removing committed Repomix output must not remove the on-demand generation command
+  or documentation.
 
-### Acceptance criteria
+Acceptance criteria:
 
-- `uv sync --frozen --all-extras` produces a working environment from a clean
-  checkout without changing `uv.lock`.
-- `uv run --frozen pytest` passes without `PYTHONPATH` manipulation.
-- `agent-cassette doctor` and `agent-cassette doctor --json` return success and
-  correctly report optional integrations.
-- CLI record/replay/fork help is provider-neutral.
-- CI builds wheel and sdist, installs the wheel into a clean environment, runs CLI
-  smoke tests, and executes the supported Python matrix.
-- README and AGENTS commands agree.
+- `uv sync --all-extras --dev` prepares a fresh checkout without guessing.
+- `uv run agent-cassette doctor` reports actionable failures.
+- `uv run pytest` succeeds without `PYTHONPATH` changes.
+- An agent can discover every required command from root documentation.
+- Wheel and source-distribution artifacts build and install successfully.
+- Generated Repomix snapshots are ignored or otherwise kept out of commits.
 
-### Required validation
+Required validation:
 
-- Targeted doctor and CLI tests.
-- `uv run --frozen pytest`
-- `uv run --frozen ruff check src tests examples`
-- `uv run --frozen ruff format --check src tests examples`
-- `uv run --frozen mypy src tests`
-- `uv build --no-build-isolation`
-- Clean virtual-environment wheel install and `agent-cassette --help` / `doctor`
-  smoke tests.
+- Fresh-checkout bootstrap and frozen-lock check.
+- Full tests, Ruff lint/format, and mypy.
+- Wheel and source-distribution build.
+- Installed-wheel CLI help and doctor human/JSON smoke tests.
+- Repomix on-demand workflow and clean-Git snapshot check.
 
-## 0.12.0b1 — LangChain Runnable support
+Historical validation: 117 tests, Ruff, mypy, lock, wheel/sdist, and installed-wheel
+doctor smokes passed at checkpoint `2d345e7`.
 
-Status: **complete**
+## 0.13.0b1 — LangChain Runnable replay
 
-Architecture decision: lazy root API keeps core importable without LangChain. A
-`Runnable` subclass records one `CUSTOM` boundary event per method. Request matching
-uses serialized input, non-ephemeral config, kwargs, and batch flags. Decoder uses
-fixed code-owned LangChain class maps and version-1 envelopes only. Streaming uses
-provider-style finalize-on-exhaust/close/error wrappers. Schema remains v1.
+Status: **complete via mapped historical checkpoint `c1e4db8`**
 
-Assigned routes/subtasks: root Sol owns API/serialization/replay design. A
-Terra-equivalent `langchain_builder` owns integration implementation/tests. A
-Terra-equivalent `langchain_packaging` owns optional dependencies, lock, docs, and
-installed-wheel smoke coverage. Sol-equivalent reviewer audits final diff.
+Goal: make LangChain chains deterministic replay boundaries.
 
-Review attempts: 3/3 — final root Sol inspection found no material issues
+Included work:
 
-Validation evidence: 152 pytest tests; Ruff lint/format across `src tests examples`;
-mypy across 54 configured files; lock check; wheel and sdist build; exact built-wheel
-record/invoke/offline replay outside checkout with `PYTHONPATH` removed on
-`langchain-core` 0.3.0 and 1.4.9. All passed.
+- Optional `langchain` extra and lazy `wrap_langchain` public API.
+- Runnable-compatible proxy supporting `invoke`, `ainvoke`, `stream`, `astream`,
+  `batch`, and `abatch`.
+- LCEL composition and `@chain` compatibility.
+- Classic `Chain` compatibility where practical without weakening Runnable behavior.
+- Safe message, message-chunk, document, structured-output, and Pydantic-value
+  serialization.
+- Failure recording/replay, offline chain replay, batch concurrency handling, and
+  streaming failure handling.
+- Provider and chain-wrapper composition.
+- A chain event type and schema migration only if the existing schema cannot safely
+  represent the boundary.
 
-Checkpoint commit: `c1e4db8`
+Explicit exclusions:
 
-### Goal
+- No lifecycle callback tracing; `0.13.0b2` owns internal spans.
+- No arbitrary object reconstruction or cassette-directed dynamic imports.
+- No global LangChain monkey-patching.
 
-Record and replay LangChain Runnable boundaries with offline-safe behavior across
-sync, async, streaming, and batch APIs.
+Dependencies:
 
-### Included work
+- `0.12.0b1` setup and artifact validation.
+- Supported `langchain-core` Runnable contracts.
+- Existing Recorder/Replayer boundary semantics.
 
-- Add optional `langchain` dependency backed by `langchain-core` and include it in
-  development/all dependency sets.
-- Add a Runnable-compatible wrapper and public `wrap_langchain` API.
-- Support `invoke`, `ainvoke`, `stream`, `astream`, `batch`, and `abatch`.
-- Support LCEL compositions and `@chain` Runnables.
-- Add code-owned, versioned serialization envelopes for safe LangChain values.
-- Reconstruct only explicitly allowlisted LangChain message, message-chunk,
-  document, and generation value types.
-- Replay without constructing or calling a live Runnable/provider.
-- Preserve partial-stream completion/error semantics consistent with provider
-  integrations.
-- Document direct Python usage and installation.
-- Contract: `wrap_langchain(runnable: Runnable | None, cassette, *,
-  name="langchain.runnable") -> Runnable`. The wrapper subclasses Runnable,
-  delegates input/output schemas, config specs, graph/introspection attributes, and
-  unknown safe attributes only when a live Runnable exists; replay with `None`
-  retains execution methods but unavailable introspection fails explicitly.
-- Each top-level method records one replayable boundary event. Batch/async batch are
-  atomic boundaries with stable input/result ordering; `return_exceptions` is
-  serialized using the existing safe exception allowlist. Independent concurrent
-  top-level calls are explicitly unsupported until Recorder/Replayer locking lands.
-- Matching input contains value plus output-affecting `RunnableConfig` fields
-  (`configurable`, `tags`, `metadata`, `recursion_limit`, `max_concurrency`) and
-  method kwargs. Ephemeral callbacks and run IDs are excluded. Unknown config keys
-  are retained as serialized values unless explicitly documented ephemeral.
-- Envelopes use fixed keys `__agent_cassette_langchain__`, `version`, `type`, and
-  `data`, currently version 1. Decoder dispatch comes only from a fixed code mapping;
-  cassette module/class strings are never imported. Values have bounded recursion
-  depth and cycle detection; unsupported/cyclic values raise a precise serialization
-  error before disk write.
-- Streams finalize only on exhaustion, explicit `close`/`aclose`, or iteration
-  failure/cancellation. Abandoned streams without close are incomplete and not
-  replayable; document this. Replayed errors use existing allowlisting.
+Compatibility and migration risks:
 
-### Explicit exclusions
+- LangChain values and Runnable behavior vary across supported versions.
+- Batch results must preserve API ordering under concurrency.
+- Streams must finalize consistently on exhaustion, close, failure, or cancellation.
+- Schema migration must remain one-step and backward compatible if introduced.
 
-- No lifecycle callback tracing; `0.12.1b1` owns internal spans.
-- No automatic global monkey-patching of LangChain.
-- No LangGraph-specific state interception beyond its Runnable-compatible surface.
-- No arbitrary object or cassette-directed type reconstruction.
+Acceptance criteria:
 
-### Dependencies
+- Chains replay without live model/provider calls.
+- Reconstructed supported values remain LangChain-compatible.
+- Sync, async, batch, and streaming paths are covered.
+- Wrapped provider and chain boundaries compose without duplicate execution.
+- Replay never imports a cassette-named type.
 
-- `0.11.1b1` deterministic setup and validation.
-- Supported `langchain-core>=0.3,<2` Runnable and serializable value contracts, with
-  minimum and current-compatible CI coverage.
-- Existing Recorder/Replayer call and stream semantics.
+Required validation:
 
-### Compatibility and migration risks
+- Runnable, LCEL, `@chain`, practical classic Chain, serialization, failure, batch,
+  and streaming tests.
+- Minimum/current supported LangChain installed-wheel smokes.
+- Full repository release gates.
 
-- LangChain has multiple major API lines; the supported version range and tested
-  matrix must be explicit.
-- Batch concurrency may complete out of order; recorded return order must still
-  follow Runnable API guarantees.
-- Stream recordings must not be finalized before exhaustion, explicit close, or
-  failure.
-- Existing event JSON can contain versioned payload envelopes, so schema v1 is
-  expected to remain sufficient. If implementation disproves this, Sol must design
-  a one-step migration and update this plan before code changes.
-- Existing Recorder/Replayer/storage mutation is unsynchronized. This version uses
-  one atomic event per top-level batch and documents independent concurrent wrapper
-  calls as unsupported; it does not claim general parallel replay safety.
+Historical validation: 152 tests plus LangChain Core 0.3.0 and 1.4.9 installed-wheel
+record/replay smokes passed at checkpoint `c1e4db8`.
 
-### Acceptance criteria
+## 0.13.0b2 — LangChain lifecycle tracing
 
-- Wrapped LCEL and `@chain` Runnables retain Runnable compatibility.
-- All six required execution methods record and replay equal supported values.
-- Replay with `None` as live Runnable makes no provider/network call.
-- Unsupported values degrade to safe JSON data or fail with a precise error; no
-  dynamic imports occur.
-- Sync/async failures and partial streams replay deterministically.
-- Wrapper preserves `**kwargs`, supported `RunnableConfig`, and batch
-  `return_exceptions` semantics.
-- Schema-v1 cassettes recorded before LangChain support remain readable.
+Status: **complete via mapped historical checkpoint `7680e74`**
 
-### Required validation
+Goal: complete the LangChain feature set before the next minor version.
 
-- Unit tests for serialization allowlist and hostile type metadata.
-- Runnable, LCEL, `@chain`, stream, async stream, batch, async batch, and failure
-  tests.
-- Full repository gates from global invariants.
-- Installed-wheel LangChain record/replay smoke test.
+Included work:
 
-## 0.12.1b1 — LangChain lifecycle tracing
+- Public `AgentCassetteCallback`-compatible callback surface.
+- Chain, model, retriever, parser, and tool lifecycle spans/events.
+- Nested Runnable spans, run-ID correlation, and parent/child relationships.
+- Sync, async, streaming, cancellation, and failure events.
+- Provider-event deduplication.
+- Boundary-replay and trace-only instrumentation modes.
+- Recorder synchronization needed for concurrent callback delivery.
 
-Status: **complete**
+Explicit exclusions:
 
-Architecture decision: lazy `langchain_callback_handler(cassette)` returns a
-BaseCallbackHandler implementation. One terminal `CUSTOM` event represents each
-run, with `_agent_cassette.observational=true`, `span_id=run_id`, and
-`parent_id=parent_run_id`; replay filters only that exact flag. Recorder uses an
-instance `RLock` around append/event/save mutation. Parser classification is
-best-effort from fixed metadata/name hints. Handler is a no-op on replay.
-
-Assigned routes/subtasks: root Sol owns lifecycle/dedup/concurrency semantics.
-Terra-equivalent `lifecycle_builder` owns handler, recorder/replay changes, and
-tests. Terra-equivalent `lifecycle_packaging` owns version/docs/lock/CI smoke.
-Sol-equivalent reviewer audits final diff.
-
-Review attempts: 1/3. The reviewer requested explicit async concurrent nested
-hierarchy coverage; Terra added it. The final Sol-equivalent review found no
-material issues.
-
-Validation evidence: 162 tests passed; Ruff lint and format checks passed; mypy
-passed across 56 files; frozen lock check passed; wheel and sdist built; installed
-wheel CLI and `doctor --json` smokes passed outside the checkout; installed-wheel
-record/offline-replay callback smokes passed with LangChain Core 0.3.0 and 1.4.9.
-
-Checkpoint commit: pending
-
-### Goal
-
-Offer optional internal LangChain lifecycle traces with correct hierarchy and no
-duplicate replay/provider events.
-
-### Included work
-
-- Add public LangChain callback handler.
-- Trace chain, model, retriever, parser, and tool lifecycle spans.
-- Preserve `run_id` / `parent_run_id` relationships under concurrent callbacks.
-- Mark tracing events observational so strict replay does not consume them.
-- Avoid duplicate provider model/tool events while retaining lifecycle context.
-- Cover sync, async, streaming, cancellation, and failure callbacks.
-- Document callback composition through `RunnableConfig`.
-- Represent each lifecycle run as one terminal observational event with
-  `metadata._agent_cassette.observational=true`, `span_id=<run_id>`, and
-  `parent_id=<parent_run_id>`. Event names identify lifecycle category and terminal
-  outcome. Model/tool lifecycle uses `CUSTOM`; replayable provider events remain
-  `MODEL_CALL`/`TOOL_CALL`.
-- Add synchronized Recorder/storage mutation boundaries so concurrent callback
-  events cannot race file appends or `events` updates.
-
-### Explicit exclusions
-
-- No replay short-circuiting through callbacks; wrapper remains replay boundary.
-- No LangSmith transport or remote tracing integration.
+- No LangSmith transport.
 - No process-global callback installation.
-- No project scaffolding changes.
+- No consumer-project initialization.
 
-### Dependencies
+Dependencies:
 
-- `0.12.0b1` serialization and LangChain dependency.
-- Existing event span/parent fields.
+- `0.13.0b1` Runnable replay and serialization contracts.
+- LangChain callback and run hierarchy contracts.
 
-### Compatibility and migration risks
+Compatibility and migration risks:
 
-- Callback sequences differ across Runnable types and LangChain versions.
-- Callback methods can arrive from multiple threads/tasks; mapping updates require
-  synchronization.
-- Observational metadata must be ignored by replay without hiding actual calls.
-- Parser lifecycle may surface as chain callbacks; classification is best-effort
-  using documented LangChain metadata and otherwise remains `chain`.
+- Callback ordering and parser classification vary across LangChain releases.
+- Observational trace events must not be consumed as replay boundaries.
+- Callback instrumentation must not alter user callback behavior or provider calls.
 
-### Acceptance criteria
+Acceptance criteria:
 
-- Nested lifecycle events preserve parent/child relationships.
-- Strict replay ignores observational events and consumes every execution boundary.
-- Provider calls remain single replayable events when callbacks are active.
-- Existing user callbacks compose normally.
-- Failure events retain original run hierarchy and sanitized payloads.
-- Replay ignores exactly events marked observational and does not hide ordinary
-  custom/error events.
-- Concurrent and late/out-of-order children, duplicate terminal callbacks,
-  cancellation, and handler use during replay have defined tested behavior.
+- Full internal trajectories are visible with correct parent/child relationships.
+- Provider and lifecycle events are not duplicated.
+- Callback instrumentation does not change chain behavior.
+- Boundary replay ignores observational trace events deterministically.
+- Sync, async, and streaming lifecycle suites pass.
 
-### Required validation
+Required validation:
 
-- Callback unit tests for every required lifecycle category.
-- Concurrent sync/async hierarchy tests.
-- Provider-plus-callback deduplication tests.
-- Stream and failure tests.
-- Full repository gates from global invariants.
+- Every lifecycle category, nesting, correlation, streaming, failure, cancellation,
+  deduplication, trace-only, and boundary-replay tests.
+- Concurrent sync/async callback tests.
+- Full repository release gates and minimum/current LangChain smoke tests.
 
-## 0.13.0b1 — Agent-first initialization
+Historical validation: 162 tests, Ruff, mypy, artifact builds, and LangChain Core
+0.3.0/1.4.9 callback replay smokes passed at checkpoint `7680e74`.
 
-Status: **planned**
+## 0.14.0b1 — Agent-first initialization
 
-Architecture decision: pending
+Status: **complete**
 
-Assigned routes/subtasks: pending
+Architecture decision: initialization uses a schema-v1 `.agent-cassette.toml`,
+static manifest/source inspection, a versioned deterministic report, and fail-closed
+directory-FD/no-follow filesystem operations with atomic create-without-replace.
+Configuration drives cassette directory and replay matching/strictness defaults;
+explicit CLI/pytest options override it. Existing compatible configuration is
+accepted, while non-exact scaffold files are never overwritten.
 
-Review attempts: 0/3
+Assigned routes: root Sol owns filesystem security, config/CLI semantics, and final
+integration. Terra-equivalent `init_builder` owns implementation/tests;
+Terra-equivalent `init_packaging` owns version, dependency, docs, lock, and CI.
+Sol-equivalent review follows implementation, with at most three fix cycles.
 
-Validation evidence: pending
+Review attempts: **5/5 complete (cycles 4 and 5 explicitly authorized by the user)**.
+Attempt 1 closed the original filesystem,
+configuration, FIFO, warning, and dry-run findings. Attempt 2 closed portable
+read-only config loading, control-character path rejection, frozen bootstrap docs,
+and identity-held rollback; attempt 3 closes a post-publication descriptor-failure
+bookkeeping window. Final review found two remaining helper-internal
+`BaseException` windows immediately after `os.link` and `os.mkdir`, before rollback
+records exist. Cycle 4 addresses only those two helper-internal rollback windows.
+Its final review verified file cleanup but found that post-`mkdir` cleanup without a
+captured identity can delete an unrelated replacement directory. Cycle 5 applied
+the conservative rule that unknown-identity directories are never removed by name,
+added the replacement-race test, and received final Sol-equivalent acceptance with
+no material findings.
 
-Checkpoint commit: pending
-
-### Goal
-
-Let a coding agent initialize Agent Cassette in a consumer repository safely,
-idempotently, and without guessing project structure.
-
-### Included work
-
-- Add `agent-cassette init --detect`.
-- Add idempotent `--check` and non-mutating `--dry-run` modes.
-- Define and load `agent-cassette.toml` schema version 1. Supported keys:
-  `schema_version`, `cassette_dir`, `match`, `strict`, `providers`, and `frameworks`.
-  Reject future schema versions and invalid known values; preserve/ignore unknown
-  keys with a warning for forward compatibility. Use `tomli>=2` only on Python
-  `<3.11` and standard-library `tomllib` otherwise.
-- Detect supported providers/frameworks from `pyproject.toml`, `requirements*.txt`,
-  `setup.cfg`, and `setup.py` using static text/config parsing without executing code.
-- Scaffold `agent-cassette.toml`, `tests/cassettes/.gitkeep`, and
-  `tests/test_agent_cassette_smoke.py`. Do not ignore cassette fixtures; they are
-  regression artifacts. Add only a marked Agent Cassette block for transient viewer
-  outputs to `.gitignore` when needed.
-- Print concise next commands tailored to detected integrations.
-- Return deterministic exit codes and optional JSON-friendly diagnostics where
-  appropriate.
-- Document generated files, conflict behavior, and automation usage.
-
-### Explicit exclusions
-
-- No dependency installation or modification of dependency manifests.
-- No secret discovery, API-key writing, or execution of consumer code.
-- No overwrite of non-generated user files.
-- No support for non-Python project detection.
-
-### Dependencies
-
-- `0.11.1b1` doctor and setup language.
-- `0.12.x` framework inventory and LangChain examples.
-- Standard-library TOML reader on Python 3.11+, with a safe Python 3.10 strategy.
-
-### Compatibility and migration risks
-
-- Initialization touches user repositories; path traversal, symlinks, encoding, and
-  partial-write behavior require security review.
-- Configuration must tolerate unknown future keys while rejecting invalid known
-  values.
-- Repeated runs must not duplicate `.gitignore` or alter accepted scaffolds.
-- Modes are mutually exclusive: `--dry-run` previews and returns 0 when applicable;
-  `--check` performs no writes and returns 0 when current, 1 when changes are needed,
-  2 on invalid/conflicting state; normal mode returns 0 on success, 2 on conflict.
-- Perform full preflight before writes, resolve every target under project root,
-  reject symlinked targets/parents, write atomically, and roll back files created by
-  the current run after partial failure. Existing non-generated conflicts are never
-  overwritten.
-
-### Acceptance criteria
-
-- `init --detect --dry-run` changes nothing and reports planned files.
-- First `init --detect` creates only documented files inside the project root.
-- Second run makes no changes.
-- `init --check` returns success only when required generated state is present and
-  compatible.
-- Provider/framework detection has fixture coverage for supported manifest forms.
-- Generated smoke test records and replays without a live provider.
-
-### Required validation
-
-- Filesystem, symlink, conflict, idempotency, dry-run, check, and detection tests.
-- Generated-project smoke test.
-- Full repository gates from global invariants.
-- Installed-wheel initialization smoke test in an empty temporary project.
-
-## 1.0.0 — Stable public release
-
-Status: **planned**
-
-Architecture decision: pending
-
-Assigned routes/subtasks: pending
-
-Review attempts: 0/3
-
-Validation evidence: pending
+Validation evidence: 240 tests passed; Ruff lint and format passed across 59 files;
+mypy passed across 58 files; frozen lock resolved 77 packages; wheel and sdist
+built; an exact 0.14.0b1 wheel in a fresh Python 3.13 consumer outside the checkout
+passed doctor, dry-run/check/apply/idempotence, custom cassette directory,
+configuration-driven normalized/non-strict record/replay, and generated offline
+smokes. Workflow YAML, wheel metadata, and diff checks passed.
 
 Checkpoint commit: pending
 
-### Goal
+Goal: let Agent Cassette configure itself safely inside another Python repository.
 
-Freeze the documented public contract and prove fresh-install/offline-replay behavior
-for the first stable release.
+Included work:
 
-### Included work
+- `agent-cassette init`, `init --detect`, `init --check`, and `init --dry-run`.
+- Schema-versioned `.agent-cassette.toml` project configuration.
+- Static provider, framework, and test-framework detection without importing or
+  executing consumer code.
+- Cassette-directory scaffolding driven by configuration.
+- Offline smoke-test generation and pytest configuration.
+- Suggested matching defaults and configuration-driven CLI behavior.
+- Idempotent configuration updates that preserve existing files.
+- Clear, integration-aware next-step commands.
 
-- Audit and explicitly stabilize supported public APIs.
-- Add public `__version__` and typed-package marker if absent.
-- Publish Python, provider SDK, LangChain/LangGraph, and cassette schema compatibility
-  matrix.
-- Document schema migration guarantees and safe replay reconstruction policy.
-- Add complete beta-to-1.0 upgrade guide.
-- Add fresh-install and offline-replay integration tests using built artifacts.
-- Explicitly support single-process recording only. Add a cross-process exclusive
-  writer lock per cassette path; reject concurrent/inherited writers with a precise
-  error instead of risking truncation or lost events. Define lock acquisition,
-  release, process ownership, and stale-lock recovery behavior without silently
-  deleting a live writer lock.
-- Synchronize metadata, classifiers, README, examples, and CLI version output.
-- Perform security, compatibility, determinism, documentation, and scope audits.
-- Publish an explicit stable API table covering `__all__`, CLI/config contracts,
-  compatibility aliases/deprecations, optional-dependency failures, and a decision
-  on migration registry APIs.
-- Audit every version surface including package metadata, README beta text, CLI
-  `--version`, action metadata, built wheel metadata, and OTLP scope version
-  (currently hardcoded to an older beta label).
+Explicit exclusions:
 
-### Explicit exclusions
+- No dependency installation or dependency-manifest modification.
+- No API-key discovery/writes or consumer-code execution.
+- No overwrite of unowned user files.
+- No non-Python project detection.
 
-- No new provider family solely for release breadth.
-- No remote service, hosted viewer, package publication, or GitHub release.
-- No silent best-effort behavior for unsupported multi-process recording.
+Dependencies:
 
-### Dependencies
+- Completed `0.12.0b1` setup/doctor behavior.
+- Completed `0.13.0b1` and `0.13.0b2` framework surfaces.
+- Safe TOML loading on every supported Python version.
 
-- Every preceding version complete and committed.
-- Stable cassette schema and configuration semantics from prior releases.
+Compatibility and migration risks:
 
-### Compatibility and migration risks
+- Initialization writes to consumer repositories; path traversal, symlink races,
+  atomic publication, rollback, FIFOs/devices, and partial failure require strict
+  security review.
+- Existing configuration and files must remain preserved and idempotent.
+- Detection errors must be reported rather than silently becoming empty detection.
+- Configuration defaults must actually drive CLI and pytest behavior.
+- Earlier uncommitted work used `agent-cassette.toml`; final implementation and
+  migration behavior must align with the new `.agent-cassette.toml` name.
 
-- Removing or renaming beta APIs requires explicit compatibility aliases or upgrade
-  instructions.
-- Stable version promises make accidental exports and undocumented behavior costly.
-- Multi-process claims must match actual file-locking and event-order semantics.
+Acceptance criteria:
 
-### Acceptance criteria
+- Initialization is idempotent and existing files are preserved.
+- `--dry-run` and `--check` never write and have deterministic exit codes.
+- Detected providers, frameworks, and test frameworks are accurate and explain
+  skipped/malformed manifests.
+- Generated projects pass `doctor` and their offline smoke test.
+- Users can immediately record and replay a smoke cassette.
+- Configuration changes cassette paths, matching, strictness, CLI, and pytest
+  defaults as documented.
 
-- Documented public imports, CLI commands, configuration, and schema guarantees match
-  implementation and tests.
-- Compatibility matrix reflects tested ranges.
-- Fresh wheel install can initialize, diagnose, record, and replay offline.
-- Unsupported multi-process use is either deterministic or explicitly rejected and
-  documented.
-- Sol final review finds no material correctness, security, compatibility, migration,
-  replay, test, documentation, or scope issues.
-- Git worktree is clean at the target commit.
+Required validation:
 
-### Required validation
+- Filesystem race, symlink, FIFO/device, traversal, conflict, rollback, idempotency,
+  dry-run/check, and detection tests.
+- Configuration-driven CLI and pytest tests with explicit override coverage.
+- Empty-project installed-wheel initialization and generated-project smoke tests.
+- Full repository release gates and Sol security review.
 
-- Full test, lint, format, and type-check suites.
-- Wheel and sdist build plus metadata inspection.
-- Fresh-environment install from wheel.
-- CLI help/version/doctor/init smoke tests.
-- LangChain installed-wheel record/replay smoke test with network/provider calls
-  forbidden.
-- Migration and older-cassette compatibility tests.
-- Final Git status and version-string audit.
+## 0.15.0b1 — Compatibility and security
+
+Status: **planned**
+
+Goal: freeze feature expansion and prepare a safe stable contract.
+
+Included work:
+
+- Python, OpenAI, Anthropic, LangChain, and OpenAI Agents compatibility matrices.
+- Optional-extra installation tests.
+- Corrupted-cassette handling and partial-write recovery.
+- Large-cassette benchmarks.
+- Serialization security review, redaction audit, and replay safety audit.
+- Public API inventory.
+- CLI exit-code standardization and deprecation warnings.
+- Beta upgrade documentation and schema compatibility documentation.
+
+Explicit exclusions:
+
+- No new providers, frameworks, or major feature families.
+- No breaking public API removal without a documented deprecation path.
+- No publication or remote release operations.
+
+Dependencies:
+
+- Every beta feature version through `0.14.0b1` complete.
+- Representative supported SDK versions available to CI.
+
+Compatibility and migration risks:
+
+- Matrix claims must reflect tested versions, not broad dependency specifiers alone.
+- Recovery must never reinterpret corrupted data as trusted executable/type metadata.
+- Standardized exit codes may require beta compatibility aliases or warnings.
+
+Acceptance criteria:
+
+- Supported dependency ranges are explicit and tested.
+- Public APIs intended for 1.0 are identified.
+- No known unsafe replay paths remain.
+- Fresh-install and offline-replay tests pass across the supported matrix.
+- Corruption and partial writes fail safely or recover deterministically.
+
+Required validation:
+
+- Full compatibility matrix and optional-extra installation jobs.
+- Corruption, recovery, security, redaction, and replay-adversary suites.
+- Reproducible large-cassette benchmark report.
+- Full repository release gates and Sol security review.
+
+## 1.0.0rc1 — Contract freeze
+
+Status: **planned**
+
+Goal: test the final stable API, CLI, adapter, schema, and migration contract.
+
+Included work:
+
+- Freeze Python API and CLI structure.
+- Freeze adapter protocol v1.
+- Freeze cassette schema policy and migration guarantees.
+- Run real-project compatibility tests.
+- Publish final migration documentation in the repository.
+- Accept only release-blocking fixes and issue-report feedback.
+
+Explicit exclusions:
+
+- No new providers, frameworks, or major features.
+- No opportunistic refactors unrelated to release blockers.
+- No remote publication from this orchestration task.
+
+Dependencies:
+
+- `0.15.0b1` complete with no unresolved material security findings.
+- Complete stable public API inventory and compatibility matrices.
+
+Compatibility and migration risks:
+
+- Any RC contract change must be treated as release-blocking and fully documented.
+- Real-project fixtures must not require secrets for offline replay validation.
+
+Acceptance criteria:
+
+- Frozen contracts are documented and enforced by compatibility tests.
+- Real-project record fixtures replay offline without live calls.
+- Only release-blocking defects remain eligible for changes.
+- Final migration documentation is complete.
+
+Required validation:
+
+- Full repository and compatibility-matrix gates.
+- Public API/CLI/schema snapshots.
+- Real-project fresh-install, upgrade, and offline-replay suites.
+- Sol contract-freeze review.
+
+## 1.0.0 — Stable release
+
+Status: **planned**
+
+Goal: ship Agent Cassette as the open, provider-neutral record and replay system for
+testing AI agents.
+
+Stable guarantees:
+
+- Stable public API and CLI contract.
+- Documented cassette compatibility and safe migrations.
+- Offline replay and secret-redaction guarantees.
+- Provider and framework conformance tests.
+- Tested installation and upgrade paths.
+- Maintainer-controlled architecture and releases.
+
+Explicit exclusions:
+
+- No new feature work after RC beyond release-blocking fixes.
+- No push, publication, GitHub release, or external-system modification in this
+  local implementation task.
+
+Dependencies:
+
+- `1.0.0rc1` complete and all release blockers resolved.
+- Every prior version complete with coherent Git checkpoints.
+
+Compatibility and migration risks:
+
+- Stable promises must exactly match implementation and tested compatibility ranges.
+- Version, metadata, documentation, schema, and built artifacts must agree.
+
+Acceptance criteria:
+
+- Every stable guarantee is backed by tests and documentation.
+- Full tests, lint, formatting, typing, builds, installed-wheel smokes, compatibility
+  matrices, migrations, and offline replay pass.
+- Sol final review finds no material correctness, security, compatibility, replay,
+  migration, documentation, or scope issue.
+- The working tree is clean and every version has a local Git checkpoint.
+
+Required validation:
+
+- Full repository, compatibility, conformance, migration, corruption, redaction,
+  fresh-install, upgrade, and offline-replay suites.
+- Wheel/sdist metadata and version-string audit.
+- CLI help/version/doctor/init smoke tests from the installed wheel.
+- Final public API/CLI/schema snapshot review and clean Git status.

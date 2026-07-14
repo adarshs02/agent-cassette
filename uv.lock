@@ -13,8 +13,11 @@ resolution-markers = [
 
 [[package]]
 name = "agent-cassette"
-version = "0.12.1b1"
+version = "0.14.0b1"
 source = { editable = "." }
+dependencies = [
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+]
 
 [package.optional-dependencies]
 agents = [
@@ -58,6 +61,7 @@ requires-dist = [
     { name = "openai-agents", marker = "extra == 'all'", specifier = ">=0.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2" },
 ]
 provides-extras = ["dev", "openai", "anthropic", "agents", "langchain", "all"]
 

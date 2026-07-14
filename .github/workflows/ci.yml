@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install locked environment
-        run: uv sync --frozen --all-extras --python "${{ matrix.python-version }}"
+        run: uv sync --frozen --all-extras --dev --python "${{ matrix.python-version }}"
       - name: Test
         run: uv run --frozen --python "${{ matrix.python-version }}" pytest
       - name: Lint
@@ -47,7 +47,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install locked build environment
-        run: uv sync --frozen --all-extras --python "3.13"
+        run: uv sync --frozen --all-extras --dev --python "3.13"
       - name: Build wheel and source distribution
         run: uv build --no-build-isolation
       - name: Install and smoke-test wheel outside checkout
@@ -55,10 +55,36 @@ jobs:
         run: |
           SMOKE_DIR="$RUNNER_TEMP/agent-cassette-smoke"
           uv venv "$SMOKE_DIR/venv" --python "3.13"
-          uv pip install --python "$SMOKE_DIR/venv/bin/python" dist/*.whl
+          uv pip install --python "$SMOKE_DIR/venv/bin/python" dist/*.whl pytest
           cd "$SMOKE_DIR"
           env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" --help
           env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" doctor --json
+          mkdir empty-project
+          cd empty-project
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" init --detect --dry-run --json
+          if env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" init --detect --check --json; then
+            echo "uninitialized project unexpectedly passed init --check" >&2
+            exit 1
+          else
+            status="$?"
+            test "$status" -eq 1
+          fi
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" init --detect --json
+          test -f .agent-cassette.toml
+          sed -i \
+            -e 's#cassette_dir = "tests/cassettes"#cassette_dir = "fixtures/agent-cassettes"#' \
+            -e 's#match = "exact"#match = "normalized"#' \
+            -e 's#strict = true#strict = false#' \
+            .agent-cassette.toml
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" init --detect --json
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" init --detect --check --json
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" doctor --json
+          test -f fixtures/agent-cassettes/.gitkeep
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" record \
+            fixtures/agent-cassettes/cli-smoke.jsonl -- tests/test_agent_cassette_smoke.py
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" replay \
+            fixtures/agent-cassettes/cli-smoke.jsonl -- tests/test_agent_cassette_smoke.py
+          env -u PYTHONPATH "$SMOKE_DIR/venv/bin/python" -m pytest tests/test_agent_cassette_smoke.py
       - uses: actions/upload-artifact@v4
         with:
           name: distributions
