@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -17,10 +18,19 @@ from agent_cassette.assertions import (
     no_errors,
 )
 from agent_cassette.cassette import Cassette
+from agent_cassette.deprecations import AgentCassetteDeprecationWarning
 from agent_cassette.diagnostics import doctor
 from agent_cassette.diff import compare_cassettes
 from agent_cassette.events import EventType
-from agent_cassette.hybrid import Delay, Hybrid, InjectionRule, Raise, RateLimitError, Return
+from agent_cassette.hybrid import (
+    Delay,
+    Hybrid,
+    HybridConfigurationError,
+    InjectionRule,
+    Raise,
+    RateLimitError,
+    Return,
+)
 from agent_cassette.interop import export_otlp, import_otlp
 from agent_cassette.matching import MatchMode
 from agent_cassette.migration import migrate_cassette
@@ -30,9 +40,16 @@ from agent_cassette.project_init import (
     load_project_config_from_root,
     render_init_report,
 )
+from agent_cassette.replay import ReplayMismatchError
 from agent_cassette.reports import CIReport
-from agent_cassette.runner import run_python, validate_python_command
-from agent_cassette.storage import load_events, save_events
+from agent_cassette.runner import RunnerUsageError, run_python, validate_python_command
+from agent_cassette.storage import (
+    CassetteCorruptionError,
+    RecoveryReport,
+    load_events,
+    recover_cassette,
+    save_events,
+)
 from agent_cassette.viewer import write_viewer
 
 
@@ -61,12 +78,30 @@ def _inspect(path: Path, *, as_json: bool) -> int:
 
 def _diff(baseline: Path, candidate: Path, *, as_json: bool, report_json: Path | None) -> int:
     report = compare_cassettes(baseline, candidate)
-    print(json.dumps(report.to_dict(), indent=2, sort_keys=True) if as_json else report.to_text())
     if report_json is not None:
         ci_report = CIReport(metadata={"baseline": str(baseline), "candidate": str(candidate)})
         ci_report.add_diff("trajectory", report)
         ci_report.write_json(report_json)
+    print(json.dumps(report.to_dict(), indent=2, sort_keys=True) if as_json else report.to_text())
     return 0 if report.identical else 1
+
+
+def _recover(source: Path, destination: Path, *, as_json: bool) -> int:
+    report: RecoveryReport = recover_cassette(source, destination)
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    elif report.recovered:
+        print(
+            f"Recovered {report.events} event(s) to {report.destination}; "
+            f"discarded {report.discarded_bytes} byte(s) at offset "
+            f"{report.discarded_offset}."
+        )
+    else:
+        print(
+            f"Validated {report.events} event(s) and wrote {report.destination}; "
+            "no incomplete tail found."
+        )
+    return 0
 
 
 def _check(parsed: argparse.Namespace) -> int:
@@ -164,11 +199,7 @@ def _run(parsed: argparse.Namespace) -> int:
     if parsed.command == "record":
         context = Cassette.record(parsed.cassette)
     elif parsed.command == "replay":
-        try:
-            loaded = load_project_config_from_root(Path.cwd())
-        except ProjectInitError as error:
-            print(f"Invalid project configuration: {error}", file=sys.stderr)
-            return 2
+        loaded = load_project_config_from_root(Path.cwd())
         config = loaded[0] if loaded is not None else None
         if loaded is not None:
             for warning in loaded[1]:
@@ -187,15 +218,43 @@ def _run(parsed: argparse.Namespace) -> int:
             match=cast(MatchMode, match_value),
         )
     else:
-        context = Hybrid(
-            parsed.source,
-            parsed.output,
-            prefix=parsed.at,
-            mismatch=parsed.mismatch,
-            injections=_load_injections(parsed.inject),
-        )
-    with context as cassette:
-        return run_python(command, cassette)
+        try:
+            context = Hybrid(
+                parsed.source,
+                parsed.output,
+                prefix=parsed.at,
+                mismatch=parsed.mismatch,
+                injections=_load_injections(parsed.inject),
+            )
+        except (json.JSONDecodeError, UnicodeError, OSError, ValueError) as error:
+            raise _CLIInputError(str(error)) from error
+    child_error: Exception | None = None
+    try:
+        with context as cassette:
+            try:
+                child_status = run_python(command, cassette)
+            except ReplayMismatchError:
+                raise
+            except Exception as error:
+                child_error = error
+                raise
+    except Exception as error:
+        if error is child_error:
+            raise _ChildExecutionError(error) from error
+        raise
+    return 0 if child_status == 0 else 1
+
+
+class _CLIInputError(ValueError):
+    """Expected invalid CLI input that is safe to render without a traceback."""
+
+
+class _ChildExecutionError(Exception):
+    """Private marker distinguishing user-code failures from CLI failures."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        super().__init__(str(error))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -237,6 +296,13 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_parser = subparsers.add_parser("migrate", help="rewrite using the current schema")
     migrate_parser.add_argument("cassette", type=Path)
     migrate_parser.add_argument("--output", "-o", type=Path)
+
+    recover_parser = subparsers.add_parser(
+        "recover", help="recover only an incomplete final JSONL fragment"
+    )
+    recover_parser.add_argument("source", type=Path)
+    recover_parser.add_argument("output", type=Path)
+    recover_parser.add_argument("--json", action="store_true", dest="as_json")
 
     doctor_parser = subparsers.add_parser("doctor", help="diagnose installation and integrations")
     doctor_parser.add_argument("--json", action="store_true", dest="as_json")
@@ -290,9 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(arguments: Sequence[str] | None = None) -> int:
-    """Run the Agent Cassette CLI."""
-    parsed = build_parser().parse_args(arguments)
+def _dispatch(parsed: argparse.Namespace) -> int:
     if parsed.command == "inspect":
         return _inspect(parsed.cassette, as_json=parsed.as_json)
     if parsed.command == "diff":
@@ -317,8 +381,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(parsed.cassette)
         return 0
     if parsed.command == "migrate":
-        print(migrate_cassette(parsed.cassette, parsed.output))
+        destination = parsed.output
+        if destination is None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", AgentCassetteDeprecationWarning)
+                warnings.warn(
+                    "in-place cassette migration is deprecated; pass --output PATH",
+                    AgentCassetteDeprecationWarning,
+                    stacklevel=2,
+                )
+            destination = parsed.cassette
+        print(migrate_cassette(parsed.cassette, destination))
         return 0
+    if parsed.command == "recover":
+        return _recover(parsed.source, parsed.output, as_json=parsed.as_json)
     if parsed.command == "doctor":
         return doctor(as_json=parsed.as_json)
     if parsed.command == "init":
@@ -327,6 +403,55 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(render_init_report(report, as_json=parsed.as_json))
         return exit_code
     return _run(parsed)
+
+
+def _render_expected_error(parsed: argparse.Namespace, error: BaseException) -> None:
+    message = str(error)
+    if parsed.command == "replay" and isinstance(error, ProjectInitError):
+        message = f"Invalid project configuration: {message}"
+    if getattr(parsed, "as_json", False):
+        print(
+            json.dumps(
+                {
+                    "command": parsed.command,
+                    "error": message,
+                    "schema_version": 1,
+                    "status": "error",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        print(f"Error: {message}", file=sys.stderr)
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    """Run the Agent Cassette CLI with stable process-compatible exit codes."""
+    parsed = build_parser().parse_args(arguments)
+    try:
+        return _dispatch(parsed)
+    except _ChildExecutionError as wrapped:
+        raise wrapped.error.with_traceback(wrapped.error.__traceback__) from None
+    except ReplayMismatchError as error:
+        _render_expected_error(parsed, error)
+        return 1
+    except (
+        CassetteCorruptionError,
+        HybridConfigurationError,
+        ProjectInitError,
+        RunnerUsageError,
+        _CLIInputError,
+        OSError,
+        UnicodeError,
+    ) as error:
+        _render_expected_error(parsed, error)
+        return 2
+    except ValueError as error:
+        if parsed.command in {"record", "replay", "fork"}:
+            raise
+        _render_expected_error(parsed, error)
+        return 2
 
 
 if __name__ == "__main__":

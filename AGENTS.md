@@ -73,8 +73,8 @@ Run the complete repository gate before a release checkpoint:
 
 ```bash
 uv run --frozen pytest
-uv run --frozen ruff check src tests examples
-uv run --frozen ruff format --check src tests examples
+uv run --frozen ruff check src tests examples benchmarks
+uv run --frozen ruff format --check src tests examples benchmarks
 uv run --frozen mypy src tests
 uv build --no-build-isolation
 ```
@@ -106,14 +106,56 @@ uv pip install --python "$SMOKE_DIR/venv/bin/python" dist/*.whl
 (cd "$SMOKE_DIR" && env -u PYTHONPATH "$SMOKE_DIR/venv/bin/agent-cassette" doctor --json)
 ```
 
+CI repeats installed-wheel smokes in isolated environments for core, `openai`,
+`anthropic`, `agents`, `langchain`, and `all`. Tested ranges are OpenAI `>=1,<3`,
+Anthropic `>=0.34,<1`, OpenAI Agents `>=0.1,<1`, and LangChain Core `>=0.3,<2`.
+Minimum-boundary jobs use Python 3.10; current-boundary jobs use Python 3.13.
+Replay smokes unset provider credentials and must not access the network.
+
+## Cassette validation and recovery
+
+Schema-v1 JSONL is strict: reject duplicate object keys, non-finite numbers,
+unsupported values, invalid Event fields, cycles, and excessive nesting. Never use
+`default=str`, stringify unknown keys, or print payload representations in errors.
+Redaction runs before persistence validation and fails safely on cycles or depth.
+
+Normal reads, replay, migration, and inspection stay fail-closed. Recovery is
+explicit, source-to-different-output, and may discard only a malformed,
+unterminated final byte fragment:
+
+```bash
+agent-cassette recover interrupted.jsonl recovered.jsonl
+agent-cassette recover interrupted.jsonl recovered.jsonl --json
+```
+
+Never silently recover earlier corruption, newline-terminated corruption, or a
+decoded but invalid Event. Prefer `agent-cassette migrate SOURCE --output OUTPUT`;
+in-place migration is deprecated and warns.
+
+## Benchmark smoke
+
+Generate a versioned large-cassette report with deterministic contents:
+
+```bash
+uv run --frozen python benchmarks/large_cassette.py \
+  --events 1000 --output /tmp/agent-cassette-benchmark.jsonl
+```
+
+Validate event count, byte count, and SHA-256. Timing fields are diagnostic only;
+never add a wall-clock CI threshold.
+
 ## Repository invariants
 
 - Preserve deterministic offline replay and recursive secret redaction.
+- Keep normal cassette loading fail-closed; recovery must remain explicit and
+  source-preserving.
 - Never dynamically import a type named by cassette data.
 - Preserve cassette schema compatibility; add an explicit one-version migration
   when a schema change is unavoidable.
 - Keep optional integrations optional. Core uses only the standard library on
   Python 3.11+ and the `tomli` compatibility reader on Python 3.10.
+- Keep `agent_cassette.__all__` synchronized with `tests/test_public_api.py` and
+  `docs/public-api.md`; optional provider imports must remain lazy.
 - Keep generated cassettes, credentials, build products, and virtual environments
   out of commits unless a reviewed test fixture intentionally requires them.
 - Treat `.agents/` as vendored tooling; do not include it in project lint or type

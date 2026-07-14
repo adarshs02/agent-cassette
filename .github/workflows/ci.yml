@@ -28,11 +28,46 @@ jobs:
       - name: Test
         run: uv run --frozen --python "${{ matrix.python-version }}" pytest
       - name: Lint
-        run: uv run --frozen --python "${{ matrix.python-version }}" ruff check src tests examples
+        run: uv run --frozen --python "${{ matrix.python-version }}" ruff check src tests examples benchmarks
       - name: Check formatting
-        run: uv run --frozen --python "${{ matrix.python-version }}" ruff format --check src tests examples
+        run: uv run --frozen --python "${{ matrix.python-version }}" ruff format --check src tests examples benchmarks
       - name: Type check
         run: uv run --frozen --python "${{ matrix.python-version }}" mypy src tests
+      - name: Deterministic large-cassette smoke
+        if: matrix.python-version == '3.13'
+        shell: bash
+        run: |
+          export BENCH_DIR="$RUNNER_TEMP/large-cassette"
+          mkdir -p "$BENCH_DIR"
+          uv run --frozen --python "${{ matrix.python-version }}" \
+            python benchmarks/large_cassette.py \
+            --events 1000 --output "$BENCH_DIR/first.jsonl" > "$BENCH_DIR/first-report.json"
+          uv run --frozen --python "${{ matrix.python-version }}" \
+            python benchmarks/large_cassette.py \
+            --events 1000 --output "$BENCH_DIR/second.jsonl" > "$BENCH_DIR/second-report.json"
+          uv run --frozen --python "${{ matrix.python-version }}" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["BENCH_DIR"])
+          stable_results = []
+          for prefix in ("first", "second"):
+              cassette = (root / f"{prefix}.jsonl").read_bytes()
+              report = json.loads((root / f"{prefix}-report.json").read_text())
+              result = report["result"]
+              assert report["schema_version"] == 1
+              assert report["benchmark"] == "large-cassette"
+              assert report["parameters"] == {"event_count": 1000}
+              assert result["event_count"] == 1000
+              assert result["cassette_bytes"] == len(cassette) > 0
+              assert result["cassette_sha256"] == hashlib.sha256(cassette).hexdigest()
+              stable_results.append(
+                  (result["event_count"], result["cassette_bytes"], result["cassette_sha256"])
+              )
+          assert stable_results[0] == stable_results[1]
+          PY
 
   package:
     runs-on: ubuntu-latest
@@ -90,17 +125,53 @@ jobs:
           name: distributions
           path: dist/
 
-  langchain-compatibility:
+  installed-wheel-extras:
     runs-on: ubuntu-latest
     needs: package
     strategy:
       fail-fast: false
       matrix:
         include:
-          - compatibility: minimum
-            langchain-spec: "langchain-core==0.3.0"
-          - compatibility: current
-            langchain-spec: "langchain-core>=0.3,<2"
+          - compatibility: core-minimum-python
+            python-version: "3.10"
+            extra: ""
+            dependency-spec: ""
+          - compatibility: openai-minimum
+            python-version: "3.10"
+            extra: openai
+            dependency-spec: "openai==1.0.0"
+          - compatibility: openai-current
+            python-version: "3.13"
+            extra: openai
+            dependency-spec: ""
+          - compatibility: anthropic-minimum
+            python-version: "3.10"
+            extra: anthropic
+            dependency-spec: "anthropic==0.34.0"
+          - compatibility: anthropic-current
+            python-version: "3.13"
+            extra: anthropic
+            dependency-spec: ""
+          - compatibility: agents-minimum
+            python-version: "3.10"
+            extra: agents
+            dependency-spec: "openai-agents==0.1.0"
+          - compatibility: agents-current
+            python-version: "3.13"
+            extra: agents
+            dependency-spec: ""
+          - compatibility: langchain-minimum
+            python-version: "3.10"
+            extra: langchain
+            dependency-spec: "langchain-core==0.3.0"
+          - compatibility: langchain-current
+            python-version: "3.13"
+            extra: langchain
+            dependency-spec: ""
+          - compatibility: all-current
+            python-version: "3.13"
+            extra: all
+            dependency-spec: ""
     steps:
       - uses: astral-sh/setup-uv@v6
         with:
@@ -108,39 +179,181 @@ jobs:
           enable-cache: true
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
       - uses: actions/download-artifact@v4
         with:
           name: distributions
           path: dist/
-      - name: Smoke-test ${{ matrix.compatibility }} LangChain outside checkout
+      - name: Install ${{ matrix.compatibility }} wheel environment
         shell: bash
         env:
-          LANGCHAIN_SPEC: ${{ matrix.langchain-spec }}
+          EXTRA: ${{ matrix.extra }}
+          DEPENDENCY_SPEC: ${{ matrix.dependency-spec }}
         run: |
-          SMOKE_DIR="$RUNNER_TEMP/langchain-${{ matrix.compatibility }}"
-          uv venv "$SMOKE_DIR/venv" --python "3.13"
+          SMOKE_DIR="$RUNNER_TEMP/${{ matrix.compatibility }}"
+          uv venv "$SMOKE_DIR/venv" --python "${{ matrix.python-version }}"
           WHEELS=(dist/*.whl)
           WHEEL="${WHEELS[0]}"
-          uv pip install --python "$SMOKE_DIR/venv/bin/python" "$WHEEL[langchain]" "$LANGCHAIN_SPEC"
+          TARGET="$WHEEL"
+          if [[ -n "$EXTRA" ]]; then
+            TARGET="$WHEEL[$EXTRA]"
+          fi
+          PACKAGES=("$TARGET")
+          if [[ -n "$DEPENDENCY_SPEC" ]]; then
+            PACKAGES+=("$DEPENDENCY_SPEC")
+          fi
+          uv pip install --python "$SMOKE_DIR/venv/bin/python" "${PACKAGES[@]}"
+      - name: Smoke-test ${{ matrix.compatibility }} outside checkout
+        shell: bash
+        env:
+          CASE: ${{ matrix.compatibility }}
+        run: |
+          SMOKE_DIR="$RUNNER_TEMP/${{ matrix.compatibility }}"
           cd "$SMOKE_DIR"
+          unset PYTHONPATH OPENAI_API_KEY ANTHROPIC_API_KEY OPENAI_BASE_URL ANTHROPIC_BASE_URL
           env -u PYTHONPATH "$SMOKE_DIR/venv/bin/python" - <<'PY'
+          import asyncio
+          import os
+          import socket
+          from dataclasses import dataclass
           from pathlib import Path
 
-          from langchain_core.runnables import RunnableLambda
+          from agent_cassette import Cassette, EventType
 
-          from agent_cassette import Cassette, langchain_callback_handler, wrap_langchain
+          case = os.environ["CASE"].partition("-")[0]
+          path = Path("offline.jsonl")
 
-          path = Path("langchain.jsonl")
-          live = RunnableLambda(lambda value: {"answer": value["question"].upper()})
+          def disable_network():
+              def blocked(*args, **kwargs):
+                  raise AssertionError("network disabled during replay")
 
-          with Cassette.record(path) as cassette:
-              wrapped = wrap_langchain(live, cassette, name="ci.langchain")
-              config = {"callbacks": [langchain_callback_handler(cassette)]}
-              assert wrapped.invoke({"question": "works"}, config=config) == {"answer": "WORKS"}
+              socket.socket = blocked
 
-          with Cassette.replay(path) as cassette:
-              wrapped = wrap_langchain(None, cassette, name="ci.langchain")
-              config = {"callbacks": [langchain_callback_handler(cassette)]}
-              assert wrapped.invoke({"question": "works"}, config=config) == {"answer": "WORKS"}
+          def core_smoke():
+              request = {"question": "works"}
+              with Cassette.record(path) as cassette:
+                  recorded = cassette.call(
+                      EventType.MODEL_CALL,
+                      "ci.core",
+                      request,
+                      lambda: {"answer": "WORKS"},
+                  )
+              disable_network()
+              with Cassette.replay(path) as cassette:
+                  replayed = cassette.call(EventType.MODEL_CALL, "ci.core", request)
+              assert recorded == replayed == {"answer": "WORKS"}
+
+          if case == "openai":
+              import openai
+              from agent_cassette import wrap_openai
+
+              @dataclass
+              class Response:
+                  id: str
+                  output_text: str
+
+                  def model_dump(self, mode=None):
+                      return {"id": self.id, "output_text": self.output_text}
+
+              class Responses:
+                  def create(self, **kwargs):
+                      return Response("response-1", kwargs["input"].upper())
+
+              class Client:
+                  responses = Responses()
+
+              with Cassette.record(path) as cassette:
+                  recorded = wrap_openai(Client(), cassette).responses.create(
+                      model="offline", input="works"
+                  )
+              disable_network()
+              with Cassette.replay(path) as cassette:
+                  replayed = wrap_openai(None, cassette).responses.create(
+                      model="offline", input="works"
+                  )
+              assert recorded.output_text == replayed.output_text == "WORKS"
+              assert openai.__version__
+          elif case == "anthropic":
+              import anthropic
+              from agent_cassette import wrap_anthropic
+
+              @dataclass
+              class Message:
+                  id: str
+                  text: str
+
+                  def model_dump(self, mode=None):
+                      return {"id": self.id, "text": self.text}
+
+              class Messages:
+                  def create(self, **kwargs):
+                      return Message("message-1", kwargs["messages"][0]["content"].upper())
+
+              class Client:
+                  messages = Messages()
+
+              request = {
+                  "model": "offline",
+                  "max_tokens": 8,
+                  "messages": [{"role": "user", "content": "works"}],
+              }
+              with Cassette.record(path) as cassette:
+                  recorded = wrap_anthropic(Client(), cassette).messages.create(**request)
+              disable_network()
+              with Cassette.replay(path) as cassette:
+                  replayed = wrap_anthropic(None, cassette).messages.create(**request)
+              assert recorded.text == replayed.text == "WORKS"
+              assert anthropic.__version__
+          elif case == "agents":
+              import agents
+              from agent_cassette import AgentCassetteRunHooks
+
+              class Named:
+                  name = "offline-agent"
+
+              async def agents_smoke():
+                  with Cassette.record(path) as cassette:
+                      await AgentCassetteRunHooks(cassette).on_agent_start(None, Named())
+                  disable_network()
+                  with Cassette.replay(path) as cassette:
+                      await AgentCassetteRunHooks(cassette).on_agent_start(None, Named())
+
+              asyncio.run(agents_smoke())
+              assert agents
+          elif case == "langchain":
+              from langchain_core.runnables import RunnableLambda
+              from agent_cassette import langchain_callback_handler, wrap_langchain
+
+              calls = 0
+
+              def live(value):
+                  nonlocal_calls[0] += 1
+                  return {"answer": value["question"].upper()}
+
+              nonlocal_calls = [calls]
+              runnable = RunnableLambda(live)
+              with Cassette.record(path) as cassette:
+                  wrapped = wrap_langchain(runnable, cassette, name="ci.langchain")
+                  config = {"callbacks": [langchain_callback_handler(cassette)]}
+                  assert wrapped.invoke({"question": "works"}, config=config) == {
+                      "answer": "WORKS"
+                  }
+              disable_network()
+              with Cassette.replay(path) as cassette:
+                  wrapped = wrap_langchain(None, cassette, name="ci.langchain")
+                  config = {"callbacks": [langchain_callback_handler(cassette)]}
+                  assert wrapped.invoke({"question": "works"}, config=config) == {
+                      "answer": "WORKS"
+                  }
+              assert nonlocal_calls == [1]
+          elif case == "all":
+              import agents
+              import anthropic
+              import langchain_core
+              import openai
+
+              assert all((agents, anthropic, langchain_core, openai))
+              core_smoke()
+          else:
+              core_smoke()
           PY

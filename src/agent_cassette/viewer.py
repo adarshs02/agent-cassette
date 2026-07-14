@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_cassette.events import Event
+from agent_cassette.json_codec import validate_json_value
 from agent_cassette.redaction import redact
 from agent_cassette.storage import load_events
 
@@ -18,7 +19,8 @@ _CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-act
 
 
 def _truncate(value: Any, limit: int) -> tuple[Any, bool]:
-    serialized = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
+    validate_json_value(value)
+    serialized = json.dumps(value, allow_nan=False, sort_keys=True, ensure_ascii=False)
     if len(serialized) <= limit:
         return value, False
     return serialized[:limit] + f"… [truncated {len(serialized) - limit} chars]", True
@@ -43,7 +45,8 @@ def render_viewer(
         if redact_secrets:
             data = redact(data)
         data, truncated = _truncate(data, max_payload_chars)
-        payload = json.dumps(data, indent=2, sort_keys=True, default=str, ensure_ascii=False)
+        validate_json_value(data)
+        payload = json.dumps(data, allow_nan=False, indent=2, sort_keys=True, ensure_ascii=False)
         badge = " <strong>(payload truncated)</strong>" if truncated else ""
         summary = f"{index}. {event.type.value}: {event.name}"
         rows.append(
@@ -82,8 +85,8 @@ def write_viewer(
 ) -> None:
     """Atomically write a rendered standalone viewer."""
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     contents = render_viewer(trajectory, **options)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
     )

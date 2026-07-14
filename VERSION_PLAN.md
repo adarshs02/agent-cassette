@@ -243,7 +243,7 @@ passed doctor, dry-run/check/apply/idempotence, custom cassette directory,
 configuration-driven normalized/non-strict record/replay, and generated offline
 smokes. Workflow YAML, wheel metadata, and diff checks passed.
 
-Checkpoint commit: pending
+Checkpoint commit: `758bcb4`
 
 Goal: let Agent Cassette configure itself safely inside another Python repository.
 
@@ -304,7 +304,50 @@ Required validation:
 
 ## 0.15.0b1 — Compatibility and security
 
-Status: **planned**
+Status: **in progress — externally blocked at the minimum-SDK validation gate**
+
+Architecture decision: cassette parsing remains fail-closed by default. Recovery is
+an explicit source-to-output operation limited to discarding the bytes after the
+last line feed when that unterminated fragment cannot be decoded as strict UTF-8
+and JSON. A valid final event without a newline is retained; complete malformed
+records, duplicate keys, non-finite numbers, and schema-invalid events are never
+skipped. Blank lines remain accepted for beta compatibility. Serialization accepts
+only bounded, acyclic JSON values with string mapping keys and never falls back to
+arbitrary object stringification; values are fully serialized before any write.
+CLI exit codes are `0` for success, `1` for deterministic negative outcomes, and
+`2` for usage, configuration, corruption, or recovery errors. Compatibility claims
+are tied to isolated built-wheel CI jobs, not dependency declarations alone. Disk
+shape remains schema v1, so no schema bump is required.
+
+Assigned routes: root Sol owns corruption/recovery semantics, public API and CLI
+contracts, security decisions, integration, and final review. Terra-equivalent
+workers own bounded core-hardening, CLI/test, and packaging/documentation changes
+without overlapping file ownership. Luna-equivalent work is limited to mechanical
+version/document synchronization.
+
+Review attempts: **3/3 complete; final Sol-equivalent review accepted**. Attempt 1 found
+incomplete-token recovery classification gaps and malformed-OTLP exception leaks;
+both bounded fixes and adversarial tests pass. Attempt 2 accepted recovery but found
+one remaining extreme end-timestamp overflow in OTLP duration conversion; its
+bounded fix and regressions pass. Attempt 3 accepted correctness, security,
+compatibility, schema, replay, and documentation with no material findings.
+
+Validation evidence: 388 tests passed; Ruff lint and formatting passed across 67
+files; mypy passed across 65 files; the frozen lock resolves 77 packages; the
+deterministic 1,000-event benchmark produced byte-identical cassettes; exact
+0.15.0b1 wheel and sdist builds passed; an isolated installed core wheel passed
+doctor, init, redaction, torn-tail recovery, malformed-OTLP exit handling, and
+offline replay; isolated current OpenAI, Anthropic, OpenAI Agents, LangChain, and
+all-extras smokes passed. Minimum/current CI jobs are configured for every extra.
+
+External blocker: exact minimum OpenAI 1.0.0, Anthropic 0.34.0, OpenAI Agents
+0.1.0, and LangChain Core 0.3.0 package downloads are unavailable locally. The
+required network escalation was explicitly rejected because the platform account
+hit its usage limit, and the repository rules prohibit pushing merely to trigger
+CI. Those minimum-boundary jobs therefore remain unexecuted. This version is not
+marked complete, not committed, and the release candidate has not started.
+
+Checkpoint commit: pending.
 
 Goal: freeze feature expansion and prepare a safe stable contract.
 

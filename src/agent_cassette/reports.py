@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_cassette.assertions import AssertionReport
 from agent_cassette.diff import DiffReport
+from agent_cassette.json_codec import validate_json_value
 
 
 @dataclass(slots=True)
@@ -54,11 +55,14 @@ class CIReport:
 
     def to_json(self) -> str:
         """Serialize with stable key ordering and formatting."""
-        return json.dumps(self.to_dict(), indent=2, sort_keys=True, default=str) + "\n"
+        data = self.to_dict()
+        validate_json_value(data)
+        return json.dumps(data, allow_nan=False, indent=2, sort_keys=True) + "\n"
 
     def write_json(self, path: str | Path) -> None:
         """Atomically replace a JSON report in its destination directory."""
         destination = Path(path)
+        contents = self.to_json()
         destination.parent.mkdir(parents=True, exist_ok=True)
         file_descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
@@ -66,7 +70,7 @@ class CIReport:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as output:
-                output.write(self.to_json())
+                output.write(contents)
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, destination)

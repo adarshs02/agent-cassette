@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-cassette"
-version = "0.14.0b1"
+version = "0.15.0b1"
 description = "Deterministic record, replay, and trajectory diffing for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,14 +31,14 @@ dev = [
   "pytest>=8",
   "ruff>=0.5",
 ]
-openai = ["openai>=1.0"]
-anthropic = ["anthropic>=0.34"]
-agents = ["openai-agents>=0.1"]
+openai = ["openai>=1,<3"]
+anthropic = ["anthropic>=0.34,<1"]
+agents = ["openai-agents>=0.1,<1"]
 langchain = ["langchain-core>=0.3,<2"]
 all = [
-  "openai>=1.0",
-  "anthropic>=0.34",
-  "openai-agents>=0.1",
+  "openai>=1,<3",
+  "anthropic>=0.34,<1",
+  "openai-agents>=0.1,<1",
   "langchain-core>=0.3,<2",
 ]
 

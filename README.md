@@ -4,7 +4,7 @@
 
 Observability platforms show what happened. Agent Cassette reproduces what happened and makes the execution testable.
 
-> `0.14.0b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
+> `0.15.0b1` is a public beta. Cassette schema compatibility is maintained within the beta line, but integration APIs may still evolve before `1.0`.
 
 ## Why Agent Cassette
 
@@ -37,6 +37,17 @@ uv run --frozen pytest
 The committed `uv.lock` is the dependency source of truth. See `AGENTS.md` for the
 complete validation and package-smoke-test commands.
 
+Release validation uses the installed locked environment and never needs a manual
+`PYTHONPATH`:
+
+```bash
+uv run --frozen pytest
+uv run --frozen ruff check src tests examples benchmarks
+uv run --frozen ruff format --check src tests examples benchmarks
+uv run --frozen mypy src tests
+uv build --no-build-isolation
+```
+
 When an agent needs a single-file repository snapshot, generate it on demand. The
 output is ignored and must not be committed:
 
@@ -59,6 +70,10 @@ pip install "agent-cassette[anthropic]"
 pip install "agent-cassette[agents]"
 pip install "agent-cassette[langchain]"
 ```
+
+Tested provider ranges are OpenAI `>=1,<3`, Anthropic `>=0.34,<1`, OpenAI Agents
+`>=0.1,<1`, and LangChain Core `>=0.3,<2`. Clean installed-wheel jobs cover core,
+each extra, and `all`; see [the compatibility policy](docs/compatibility.md).
 
 ## Agent-first initialization
 
@@ -149,6 +164,28 @@ exits 2 for invalid or conflicting state. `--check` exits 0 when scaffolding is
 current, 1 when changes are needed, and 2 for invalid or conflicting state; it also
 never writes. Normal initialization exits 0 on success and 2 on invalid or
 conflicting state. `--check` and `--dry-run` are mutually exclusive.
+
+## Strict cassette format and recovery
+
+Cassette schema v1 remains unchanged in 0.15. Each nonblank JSONL record must be a
+strict Event object: duplicate object keys, `NaN`/`Infinity`, unsupported Python
+objects, invalid fields, cycles, and excessive nesting are rejected. Writes never
+fall back to `str` or `repr`. Normal load, replay, migration, and inspection fail
+closed and identify the path and line without echoing cassette payloads.
+
+Interrupted writes are never ignored implicitly. Recover only a malformed,
+unterminated final byte fragment into a different destination:
+
+```bash
+agent-cassette recover interrupted.jsonl recovered.jsonl
+agent-cassette recover interrupted.jsonl recovered.jsonl --json
+```
+
+Earlier corruption, newline-terminated corruption, and decoded-but-invalid Events
+remain hard failures. Recovery never modifies its source. Python callers can use
+`recover_cassette(source, output)` and inspect the returned `RecoveryReport`.
+See [the cassette schema contract](docs/cassette-schema.md) and
+[security model](docs/security.md) for exact boundaries.
 
 ## LangChain Runnables
 
@@ -479,8 +516,8 @@ agent-cassette doctor
 agent-cassette doctor --json
 agent-cassette inspect run.jsonl
 agent-cassette inspect run.jsonl --json
-agent-cassette migrate old.jsonl
 agent-cassette migrate old.jsonl --output upgraded.jsonl
+agent-cassette recover interrupted.jsonl recovered.jsonl --json
 ```
 
 Missing optional integrations are reported but do not make the environment
@@ -489,7 +526,17 @@ environment is unusable.
 
 ## Schema Migrations
 
-Cassette events carry a schema version. When a future release raises the schema version, registered migrations upgrade older events transparently on load, and `agent-cassette migrate` rewrites files in place:
+Cassette events carry a schema version. When a future release raises the schema
+version, registered migrations upgrade older events transparently on load. Keep
+the source as an upgrade and rollback point by passing a separate output:
+
+```bash
+agent-cassette migrate old.jsonl --output upgraded.jsonl
+```
+
+In-place `migrate_cassette(path)` and `agent-cassette migrate path` remain available
+but emit `AgentCassetteDeprecationWarning`. Valid schema-v1 cassettes need no
+migration for 0.15:
 
 ```python
 from agent_cassette import register_migration
@@ -498,6 +545,19 @@ register_migration(1, upgrade_v1_to_v2)  # each migration advances exactly one v
 ```
 
 Events newer than the installed release are rejected rather than silently misread.
+
+## Deterministic large-cassette benchmark
+
+Run the versioned benchmark report without a timing gate:
+
+```bash
+uv run --frozen python benchmarks/large_cassette.py \
+  --events 10000 --output /tmp/agent-cassette-large.jsonl
+```
+
+The JSON report includes schema version, event count, byte count, SHA-256, and
+read/write measurements. CI compares two generated cassettes by count, bytes, and
+hash; elapsed time is diagnostic only, so slow shared runners do not cause flakes.
 
 ## Architecture
 
@@ -514,6 +574,8 @@ Each JSONL event includes a schema version, ID, timestamp, type, name, input, ou
 ## Security and Current Limits
 
 - Common authorization, API-key, token, password, and secret fields are redacted recursively.
+- Redaction rejects cyclic or more-than-64-container values with a payload-free
+  `RedactionError`; shared acyclic aliases remain supported.
 - Replayed failures restore only allowlisted built-in exceptions; unknown types become `RecordedCallError` rather than being dynamically imported.
 - Review cassettes before committing sensitive production data.
 - Provider streaming events are recorded when a stream is exhausted, fails, or is explicitly closed; partial chunks replay before a recorded stream failure is raised.
@@ -521,6 +583,13 @@ Each JSONL event includes a schema version, ID, timestamp, type, name, input, ou
 - Automatic CLI execution runs Python in-process so SDK constructor patching reaches user code; treat executed scripts as trusted code.
 - Voice, realtime, browser/computer streams, and distributed multi-process capture are not yet supported.
 
+Candidate public names are snapshotted in tests and inventoried in
+[the public API document](docs/public-api.md). 0.15 deprecations and stricter data
+handling are summarized in [the beta upgrade guide](docs/beta-upgrade.md). CLI
+automation should follow the common [0/1/2 exit-code contract](docs/cli-exit-codes.md).
+
 ## Toward `1.0`
 
-The remaining stabilization work is broader provider/framework adapters (Gemini and Bedrock), multi-process ordering, richer pull-request annotations, and compatibility testing against supported SDK release ranges.
+Feature expansion is frozen through 1.0. Remaining work is contract snapshots,
+real-project offline fixtures, release-candidate validation, and a final decision to
+implement cross-process coordination or keep its unsupported status explicit.

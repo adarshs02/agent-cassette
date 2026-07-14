@@ -35,6 +35,21 @@ def sample_events() -> list[Event]:
     ]
 
 
+def external_span(**updates: object) -> dict[str, object]:
+    span: dict[str, object] = {
+        "spanId": "1" * 16,
+        "name": "external",
+        "startTimeUnixNano": "1767225600000000000",
+        "attributes": [],
+    }
+    span.update(updates)
+    return span
+
+
+def otlp_document(*spans: object) -> dict[str, object]:
+    return {"resourceSpans": [{"scopeSpans": [{"spans": list(spans)}]}]}
+
+
 def test_otlp_export_is_deterministic_and_maps_openinference_kinds():
     first = export_otlp(sample_events())
     second = export_otlp(sample_events())
@@ -153,3 +168,83 @@ def test_import_unknown_kind_is_strict_or_custom_when_permissive():
     with pytest.raises(ValueError, match="unsupported"):
         import_otlp(document)
     assert import_otlp(document, strict=False)[0].type == EventType.CUSTOM
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"resourceSpans": [None]},
+        {"resourceSpans": [{"scopeSpans": [None]}]},
+        {"resourceSpans": [{"scopeSpans": [{"spans": {}}]}]},
+        {"resourceSpans": [{"scopeSpans": [{"spans": [None]}]}]},
+    ],
+)
+def test_import_normalizes_malformed_nested_structures(
+    document: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        import_otlp(document)
+
+    assert import_otlp(document, strict=False) == []
+
+
+@pytest.mark.parametrize(
+    "attribute_value",
+    [
+        {"arrayValue": []},
+        {"arrayValue": {"values": {}}},
+        {"kvlistValue": []},
+        {"kvlistValue": {"values": {}}},
+    ],
+)
+def test_import_normalizes_malformed_nested_attribute_values(
+    attribute_value: dict[str, object],
+) -> None:
+    span = external_span(attributes=[{"key": "nested", "value": attribute_value}])
+    document = otlp_document(span)
+
+    with pytest.raises(ValueError):
+        import_otlp(document)
+
+    assert import_otlp(document, strict=False) == []
+
+
+def test_import_normalizes_malformed_status_mapping() -> None:
+    document = otlp_document(external_span(status=[]))
+
+    with pytest.raises(ValueError, match="status"):
+        import_otlp(document)
+
+    assert import_otlp(document, strict=False) == []
+
+
+def test_import_extreme_timestamp_is_payload_free_and_permissively_skipped() -> None:
+    extreme = "9" * 400
+    document = otlp_document(external_span(startTimeUnixNano=extreme))
+
+    with pytest.raises(ValueError, match="supported datetime range") as raised:
+        import_otlp(document)
+
+    assert extreme not in str(raised.value)
+    assert import_otlp(document, strict=False) == []
+
+
+def test_import_extreme_end_time_is_payload_free_and_permissively_skipped() -> None:
+    extreme = "9" * 400
+    document = otlp_document(external_span(endTimeUnixNano=extreme))
+
+    with pytest.raises(ValueError, match="finite number") as raised:
+        import_otlp(document)
+
+    assert extreme not in str(raised.value)
+    assert import_otlp(document, strict=False) == []
+
+
+def test_export_invalid_timestamp_error_does_not_echo_value() -> None:
+    event = sample_events()[0]
+    event.timestamp = "SECRET-INVALID-TIMESTAMP"
+
+    with pytest.raises(ValueError, match="valid ISO 8601") as raised:
+        export_otlp([event])
+
+    assert "SECRET-INVALID-TIMESTAMP" not in str(raised.value)

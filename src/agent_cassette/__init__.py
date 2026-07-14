@@ -15,6 +15,7 @@ from agent_cassette.assertions import (
 )
 from agent_cassette.automatic import automatic_openai_from_env, patch_anthropic, patch_openai
 from agent_cassette.cassette import Cassette
+from agent_cassette.deprecations import AgentCassetteDeprecationWarning
 from agent_cassette.diff import DiffReport, compare_cassettes
 from agent_cassette.events import Event, EventType, register_migration, unregister_migration
 from agent_cassette.hybrid import Delay, Hybrid, InjectionRule, Raise, Return
@@ -24,8 +25,10 @@ from agent_cassette.integrations.openai import wrap_openai
 from agent_cassette.integrations.openai_agents import AgentCassetteRunHooks, patch_openai_agents
 from agent_cassette.interop import export_otlp, import_otlp
 from agent_cassette.migration import migrate_cassette, migrate_event_dict
+from agent_cassette.redaction import RedactionError
 from agent_cassette.replay import RateLimitError, RecordedCallError, ReplayMismatchError
 from agent_cassette.reports import CIReport
+from agent_cassette.storage import CassetteCorruptionError, RecoveryReport, recover_cassette
 from agent_cassette.viewer import render_viewer, write_viewer
 
 
@@ -48,11 +51,13 @@ def langchain_callback_handler(cassette):
 __all__ = [
     "Adapter",
     "AdapterRegistry",
+    "AgentCassetteDeprecationWarning",
     "AgentCassetteRunHooks",
     "AssertionReport",
     "AssertionResult",
     "CIReport",
     "Cassette",
+    "CassetteCorruptionError",
     "Delay",
     "DiffReport",
     "Event",
@@ -61,7 +66,9 @@ __all__ = [
     "InjectionRule",
     "Raise",
     "RateLimitError",
+    "RecoveryReport",
     "RecordedCallError",
+    "RedactionError",
     "ReplayMismatchError",
     "Return",
     "assert_trajectory",
@@ -83,6 +90,7 @@ __all__ = [
     "patch_openai",
     "patch_openai_agents",
     "register_migration",
+    "recover_cassette",
     "render_viewer",
     "unregister_migration",
     "wrap_anthropic",

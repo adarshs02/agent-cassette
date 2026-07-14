@@ -3,6 +3,7 @@ import json
 import pytest
 
 from agent_cassette import Cassette, EventType
+from agent_cassette.deprecations import AgentCassetteDeprecationWarning
 from agent_cassette.events import Event, register_migration, unregister_migration
 from agent_cassette.migration import migrate_cassette, migrate_event_dict
 
@@ -15,7 +16,8 @@ def test_migrate_normalizes_legacy_schema_in_place(tmp_path):
     data.pop("schema_version")
     path.write_text(json.dumps(data) + "\n")
 
-    assert migrate_cassette(path) == path
+    with pytest.warns(AgentCassetteDeprecationWarning, match="in-place"):
+        assert migrate_cassette(path) == path
     migrated = json.loads(path.read_text())
     assert migrated["schema_version"] == 1
 
@@ -58,7 +60,8 @@ def test_migrate_cassette_rewrites_old_events_through_chain(tmp_path, future_sch
         line["schema_version"] = 1
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
 
-    migrate_cassette(path)
+    with pytest.warns(AgentCassetteDeprecationWarning, match="in-place"):
+        migrate_cassette(path)
     migrated = json.loads(path.read_text().splitlines()[0])
     assert migrated["schema_version"] == 2
     assert migrated["metadata"]["upgraded"] is True

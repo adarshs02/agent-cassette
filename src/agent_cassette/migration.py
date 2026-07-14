@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from warnings import warn
 
+from agent_cassette.deprecations import AgentCassetteDeprecationWarning
 from agent_cassette.events import (
     EventMigration,
     migrate_event_dict,
@@ -20,6 +22,12 @@ def migrate_cassette(source: str | Path, destination: str | Path | None = None) 
     migration chain; events newer than this release are rejected.
     """
     source_path = Path(source)
+    if destination is None:
+        warn(
+            "in-place cassette migration is deprecated; pass a separate destination path",
+            AgentCassetteDeprecationWarning,
+            stacklevel=2,
+        )
     destination_path = Path(destination) if destination is not None else source_path
     events = load_events(source_path)
     save_events(destination_path, events)
