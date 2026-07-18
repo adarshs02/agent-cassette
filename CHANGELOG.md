@@ -12,6 +12,7 @@ All notable changes to Agent Cassette are documented here. The format follows
 - `agent_cassette.__version__` exposes the installed distribution version.
 - `[project.urls]` metadata (Homepage, Repository, Documentation, Issues) for PyPI.
 - This changelog.
+- Contract-freeze snapshot tests pinning the public CLI tree and callable signatures.
 
 ### Removed
 - In-place cassette migration. `migrate_cassette` now requires a `destination`

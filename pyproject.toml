@@ -69,6 +69,10 @@ exclude = [".agents", ".codegraph"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# Contract snapshots hold verbatim signature strings that must not be reflowed.
+"tests/test_contract_snapshots.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.10"
 files = ["src", "tests"]
