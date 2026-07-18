@@ -154,8 +154,9 @@ agent-cassette recover interrupted.jsonl recovered.jsonl --json
 ```
 
 Never silently recover earlier corruption, newline-terminated corruption, or a
-decoded but invalid Event. Prefer `agent-cassette migrate SOURCE --output OUTPUT`;
-in-place migration is deprecated and warns.
+decoded but invalid Event. Use `agent-cassette migrate SOURCE --output OUTPUT`; the
+destination must differ from the source, so the source stays an upgrade and rollback
+point.
 
 ## Benchmark smoke
 

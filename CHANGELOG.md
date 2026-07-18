@@ -11,6 +11,11 @@ All notable changes to Agent Cassette are documented here. The format follows
 - `[project.urls]` metadata (Homepage, Repository, Documentation, Issues) for PyPI.
 - This changelog.
 
+### Removed
+- In-place cassette migration. `migrate_cassette` now requires a `destination`
+  argument and `agent-cassette migrate` requires `--output`; the destination must
+  differ from the source (raises `ValueError`, CLI exit 2).
+
 ## [0.15.0b1]
 
 ### Added
