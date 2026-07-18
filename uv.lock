@@ -13,7 +13,7 @@ resolution-markers = [
 
 [[package]]
 name = "agent-cassette"
-version = "1.0.0rc1"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "tomli", marker = "python_full_version < '3.11'" },

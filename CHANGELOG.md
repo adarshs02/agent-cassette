@@ -6,7 +6,10 @@ All notable changes to Agent Cassette are documented here. The format follows
 
 ## [Unreleased]
 
-## [1.0.0rc1] - 2026-07-18
+## [1.0.0] - 2026-07-18
+
+First stable release. The public API, CLI tree, adapter protocol, and cassette
+schema v1 are frozen and enforced by contract-snapshot tests.
 
 ### Added
 - `agent_cassette.__version__` exposes the installed distribution version.
