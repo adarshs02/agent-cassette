@@ -57,15 +57,40 @@ platform lacks them.
 Static manifest parse failures are warnings; do not execute project code to infer
 the missing dependency information.
 
-## On-demand repository snapshot
+## Interactive setup ("set up agent cassette")
 
-Generate a single-file Repomix snapshot only when an agent needs one:
+When a user asks a coding agent to "set up agent cassette" in their project, follow
+this flow. It needs no new tooling — use your own question tool plus the `init`
+commands above.
 
-```bash
-npx repomix --output repomix-output.xml
-```
+1. **Detect.** Run `agent-cassette init . --detect --dry-run --json`. Read
+   `detected.providers`, `detected.frameworks`, `detected.test_frameworks`, and the
+   planned files. This executes no project code and touches no dependencies.
+2. **Confirm with the user.** Ask one short multiple-choice round, prefilled from
+   detection:
+   - **Providers** to capture — `openai`, `anthropic`.
+   - **Frameworks** — `openai-agents`, `langchain`, `mcp`.
+   - **Test framework** — `pytest` (or `unittest`).
+   - **Match strictness** — `exact` (default), `subset`, `normalized`, `fuzzy`.
+   - **Cassette directory** — default `tests/cassettes`.
+3. **Write config.** Create `.agent-cassette.toml` from the answers before scaffolding
+   (`init` never overwrites an existing config; if one exists, edit it instead):
+   ```toml
+   schema_version = 1
+   cassette_dir = "tests/cassettes"
+   match = "exact"
+   strict = true
+   providers = ["openai"]
+   frameworks = ["langchain"]
+   test_frameworks = ["pytest"]
+   ```
+4. **Scaffold.** Run `agent-cassette init . --json`. The existing config is left
+   untouched; only the missing cassette directory and offline smoke test are created.
+5. **Verify.** Run `pytest tests/test_agent_cassette_smoke.py`, confirm offline replay
+   passes, and report the files created.
 
-`repomix-output.xml` is ignored. Never commit the generated snapshot.
+Treat `--check` exit 1 as "changes needed" and exit 2 from any init mode as invalid or
+conflicting state.
 
 ## Validation
 

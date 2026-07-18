@@ -7,8 +7,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-repomix-output.*
 examples/research_agent/*.jsonl
+VERSION_PLAN.md
 
 # Local agent / editor tooling — machine-local, not for origin
 .codegraph/
