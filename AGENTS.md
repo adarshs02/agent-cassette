@@ -170,6 +170,12 @@ uv run --frozen python benchmarks/large_cassette.py \
 Validate event count, byte count, and SHA-256. Timing fields are diagnostic only;
 never add a wall-clock CI threshold.
 
+## Publishing
+
+Releases publish to PyPI via `.github/workflows/publish.yml` using OIDC Trusted
+Publishing (no stored tokens): PyPI on a published GitHub Release, TestPyPI on manual
+dispatch. Process and one-time setup are in `docs/releasing.md`.
+
 ## Repository invariants
 
 - Preserve deterministic offline replay and recursive secret redaction.
