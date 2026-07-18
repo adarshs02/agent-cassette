@@ -6,6 +6,8 @@ All notable changes to Agent Cassette are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0rc1] - 2026-07-18
+
 ### Added
 - `agent_cassette.__version__` exposes the installed distribution version.
 - `[project.urls]` metadata (Homepage, Repository, Documentation, Issues) for PyPI.
