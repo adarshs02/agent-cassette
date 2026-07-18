@@ -24,9 +24,9 @@ a different output and review the reported discarded range:
 agent-cassette recover old.jsonl recovered.jsonl --json
 ```
 
-In-place `migrate_cassette(path)` and `agent-cassette migrate path` remain available
-but emit `AgentCassetteDeprecationWarning`; use a separate destination. They will
-not be removed during 1.x without another documented compatibility decision.
+In-place migration has been removed. `migrate_cassette(source, destination)` and
+`agent-cassette migrate SOURCE --output OUTPUT` now require a destination that differs
+from the source; passing the same path raises a `ValueError` (CLI exit 2).
 
 CLI outcomes now use the common 0/1/2 table in `docs/cli-exit-codes.md`. Automation
 that depended on an executed child's exact nonzero code must treat any child

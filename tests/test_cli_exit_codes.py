@@ -7,7 +7,6 @@ import pytest
 
 import agent_cassette.cli as cli
 from agent_cassette import Cassette, EventType
-from agent_cassette.deprecations import AgentCassetteDeprecationWarning
 
 
 def _cassette(path: Path, *, output: str = "ok") -> None:
@@ -265,12 +264,29 @@ def test_recover_human_output_for_unchanged_cassette(tmp_path: Path, capsys) -> 
     assert destination.exists()
 
 
-def test_in_place_migrate_emits_visible_deprecation(tmp_path: Path) -> None:
+def test_migrate_requires_output_flag(tmp_path: Path) -> None:
     source = tmp_path / "source.jsonl"
     _cassette(source)
 
-    with pytest.warns(AgentCassetteDeprecationWarning, match="in-place"):
-        assert cli.main(["migrate", str(source)]) == 0
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["migrate", str(source)])
+    assert raised.value.code == 2
+
+
+def test_migrate_rejects_same_source_and_output(tmp_path: Path) -> None:
+    source = tmp_path / "source.jsonl"
+    _cassette(source)
+
+    assert cli.main(["migrate", str(source), "--output", str(source)]) == 2
+
+
+def test_migrate_to_separate_output_succeeds(tmp_path: Path) -> None:
+    source = tmp_path / "source.jsonl"
+    destination = tmp_path / "upgraded.jsonl"
+    _cassette(source)
+
+    assert cli.main(["migrate", str(source), "--output", str(destination)]) == 0
+    assert destination.exists()
 
 
 def test_argparse_usage_remains_exit_two() -> None:

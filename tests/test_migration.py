@@ -3,23 +3,30 @@ import json
 import pytest
 
 from agent_cassette import Cassette, EventType
-from agent_cassette.deprecations import AgentCassetteDeprecationWarning
 from agent_cassette.events import Event, register_migration, unregister_migration
 from agent_cassette.migration import migrate_cassette, migrate_event_dict
 
 
-def test_migrate_normalizes_legacy_schema_in_place(tmp_path):
-    path = tmp_path / "legacy.jsonl"
-    with Cassette.record(path) as cassette:
+def test_migrate_normalizes_legacy_schema_to_destination(tmp_path):
+    source = tmp_path / "legacy.jsonl"
+    with Cassette.record(source) as cassette:
         cassette.add(EventType.CUSTOM, "legacy", output=True)
-    data = json.loads(path.read_text())
+    data = json.loads(source.read_text())
     data.pop("schema_version")
-    path.write_text(json.dumps(data) + "\n")
+    source.write_text(json.dumps(data) + "\n")
 
-    with pytest.warns(AgentCassetteDeprecationWarning, match="in-place"):
-        assert migrate_cassette(path) == path
-    migrated = json.loads(path.read_text())
+    destination = tmp_path / "upgraded.jsonl"
+    assert migrate_cassette(source, destination) == destination
+    migrated = json.loads(destination.read_text())
     assert migrated["schema_version"] == 1
+
+
+def test_migrate_requires_a_separate_destination(tmp_path):
+    source = tmp_path / "run.jsonl"
+    with Cassette.record(source) as cassette:
+        cassette.add(EventType.CUSTOM, "legacy", output=True)
+    with pytest.raises(ValueError, match="must differ from source"):
+        migrate_cassette(source, source)
 
 
 @pytest.fixture
@@ -52,17 +59,17 @@ def test_registered_migration_upgrades_old_events(future_schema):
 
 
 def test_migrate_cassette_rewrites_old_events_through_chain(tmp_path, future_schema):
-    path = tmp_path / "old.jsonl"
-    with Cassette.record(path) as cassette:
+    source = tmp_path / "old.jsonl"
+    with Cassette.record(source) as cassette:
         cassette.add(EventType.CUSTOM, "legacy", output=True)
-    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    lines = [json.loads(line) for line in source.read_text().splitlines()]
     for line in lines:
         line["schema_version"] = 1
-    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    source.write_text("".join(json.dumps(line) + "\n" for line in lines))
 
-    with pytest.warns(AgentCassetteDeprecationWarning, match="in-place"):
-        migrate_cassette(path)
-    migrated = json.loads(path.read_text().splitlines()[0])
+    destination = tmp_path / "upgraded.jsonl"
+    migrate_cassette(source, destination)
+    migrated = json.loads(destination.read_text().splitlines()[0])
     assert migrated["schema_version"] == 2
     assert migrated["metadata"]["upgraded"] is True
 

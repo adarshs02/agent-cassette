@@ -1,5 +1,8 @@
 """Public API for Agent Cassette."""
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
+
 from agent_cassette.adapters import Adapter, AdapterRegistry
 from agent_cassette.assertions import (
     AssertionReport,
@@ -30,6 +33,11 @@ from agent_cassette.replay import RateLimitError, RecordedCallError, ReplayMisma
 from agent_cassette.reports import CIReport
 from agent_cassette.storage import CassetteCorruptionError, RecoveryReport, recover_cassette
 from agent_cassette.viewer import render_viewer, write_viewer
+
+try:
+    __version__ = _version("agent-cassette")
+except PackageNotFoundError:  # pragma: no cover - source tree without installed metadata
+    __version__ = "0.0.0+unknown"
 
 
 def wrap_langchain(runnable, cassette, *, name="langchain.runnable"):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -18,7 +17,6 @@ from agent_cassette.assertions import (
     no_errors,
 )
 from agent_cassette.cassette import Cassette
-from agent_cassette.deprecations import AgentCassetteDeprecationWarning
 from agent_cassette.diagnostics import doctor
 from agent_cassette.diff import compare_cassettes
 from agent_cassette.events import EventType
@@ -295,7 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     migrate_parser = subparsers.add_parser("migrate", help="rewrite using the current schema")
     migrate_parser.add_argument("cassette", type=Path)
-    migrate_parser.add_argument("--output", "-o", type=Path)
+    migrate_parser.add_argument("--output", "-o", type=Path, required=True)
 
     recover_parser = subparsers.add_parser(
         "recover", help="recover only an incomplete final JSONL fragment"
@@ -381,17 +379,7 @@ def _dispatch(parsed: argparse.Namespace) -> int:
         print(parsed.cassette)
         return 0
     if parsed.command == "migrate":
-        destination = parsed.output
-        if destination is None:
-            with warnings.catch_warnings():
-                warnings.simplefilter("always", AgentCassetteDeprecationWarning)
-                warnings.warn(
-                    "in-place cassette migration is deprecated; pass --output PATH",
-                    AgentCassetteDeprecationWarning,
-                    stacklevel=2,
-                )
-            destination = parsed.cassette
-        print(migrate_cassette(parsed.cassette, destination))
+        print(migrate_cassette(parsed.cassette, parsed.output))
         return 0
     if parsed.command == "recover":
         return _recover(parsed.source, parsed.output, as_json=parsed.as_json)

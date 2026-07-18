@@ -35,6 +35,6 @@ line, and JSON that decodes but is not a valid Event are never skipped.
 The source is not modified. The report gives the discarded byte offset and count;
 the output is a normalized, atomically replaced cassette.
 
-Normal replay and migration never enable recovery implicitly. In-place migration
-is deprecated; pass an explicit output path so the source remains an upgrade and
+Normal replay and migration never enable recovery implicitly. Migration requires an
+explicit output path separate from the source, so the source remains an upgrade and
 rollback point.
