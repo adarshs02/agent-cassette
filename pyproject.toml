@@ -23,6 +23,12 @@ classifiers = [
 ]
 dependencies = ["tomli>=2; python_version < '3.11'"]
 
+[project.urls]
+Homepage = "https://github.com/adarshs02/agent-cassette"
+Repository = "https://github.com/adarshs02/agent-cassette"
+Documentation = "https://github.com/adarshs02/agent-cassette/tree/main/docs"
+Issues = "https://github.com/adarshs02/agent-cassette/issues"
+
 [project.optional-dependencies]
 dev = [
   "build>=1.2",

@@ -15,6 +15,9 @@ without a documented deprecation period.
 | Extensions/migrations | `Adapter`, `AdapterRegistry`, `register_migration`, `unregister_migration`, `migrate_event_dict`, `migrate_cassette` |
 | Hardening | `AgentCassetteDeprecationWarning`, `CassetteCorruptionError`, `RecoveryReport`, `RedactionError`, `recover_cassette` |
 
+The package also exposes `agent_cassette.__version__`, the installed distribution
+version.
+
 Submodules, underscored names, dataclass field layouts, report JSON not explicitly
 documented as versioned, and test helpers are internal. The RC freezes signatures,
 the adapter protocol, CLI tree, report envelopes, and schema guarantees with
