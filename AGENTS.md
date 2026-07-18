@@ -92,16 +92,6 @@ commands above.
 Treat `--check` exit 1 as "changes needed" and exit 2 from any init mode as invalid or
 conflicting state.
 
-## On-demand repository snapshot
-
-Generate a single-file Repomix snapshot only when an agent needs one:
-
-```bash
-npx repomix --output repomix-output.xml
-```
-
-`repomix-output.xml` is ignored. Never commit the generated snapshot.
-
 ## Validation
 
 Run the complete repository gate before a release checkpoint:
