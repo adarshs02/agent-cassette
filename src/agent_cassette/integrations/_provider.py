@@ -466,9 +466,7 @@ class _ResourceProxy:
                 request,
                 live_call,
                 metadata=_metadata(spec, operation),
-                serializer=lambda response: _serialize_response(
-                    response, spec.response_attributes
-                ),
+                serializer=lambda response: _serialize_response(response, spec.response_attributes),
             )
             return _restore_response(recorded)
 

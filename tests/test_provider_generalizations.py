@@ -8,6 +8,7 @@ from agent_cassette.integrations.openai import OPENAI_SPEC
 
 def test_provider_spec_has_response_attributes_default():
     from agent_cassette.integrations._provider import ProviderSpec
+
     spec = ProviderSpec(provider="x", operations=frozenset(), prefixes=frozenset())
     assert spec.response_attributes == frozenset()
 
@@ -118,16 +119,23 @@ def test_response_attributes_are_captured_and_replayed(tmp_path):
     from agent_cassette.integrations._provider import ProviderSpec, wrap_provider
 
     class _Resp:
-        def __init__(self, value): self._value = value
-        def model_dump(self, mode=None): return {"raw": self._value}
+        def __init__(self, value):
+            self._value = value
+
+        def model_dump(self, mode=None):
+            return {"raw": self._value}
+
         @property
-        def text(self): return self._value.upper()
+        def text(self):
+            return self._value.upper()
 
     class _Models:
-        def generate(self, **kw): return _Resp(kw["contents"])
+        def generate(self, **kw):
+            return _Resp(kw["contents"])
 
     class _Client:
-        def __init__(self): self.models = _Models()
+        def __init__(self):
+            self.models = _Models()
 
     spec = ProviderSpec(
         provider="demo",
@@ -143,5 +151,5 @@ def test_response_attributes_are_captured_and_replayed(tmp_path):
         replayed = wrap_provider(None, c, spec).models.generate(  # type: ignore[var-annotated]
             contents="works"
         )
-    assert replayed.text == "WORKS"      # computed property survives replay
-    assert replayed.raw == "works"       # serialized field still present
+    assert replayed.text == "WORKS"  # computed property survives replay
+    assert replayed.raw == "works"  # serialized field still present

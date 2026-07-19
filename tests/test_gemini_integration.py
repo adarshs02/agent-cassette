@@ -8,35 +8,54 @@ from agent_cassette.integrations.gemini import GEMINI_SPEC, wrap_gemini
 
 
 class _Resp:
-    def __init__(self, value): self._value = value
-    def model_dump(self, mode=None): return {"raw": self._value}
+    def __init__(self, value):
+        self._value = value
+
+    def model_dump(self, mode=None):
+        return {"raw": self._value}
+
     @property
-    def text(self): return self._value.upper()
+    def text(self):
+        return self._value.upper()
 
 
 class _AsyncEventStream:
-    def __init__(self, values): self._values = values
+    def __init__(self, values):
+        self._values = values
+
     def __aiter__(self):
         async def gen():
             for v in self._values:
                 yield _Resp(v)
+
         return gen()
-    async def __aenter__(self): return self
-    async def __aexit__(self, *a): return False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
 
 
 class _Models:
-    def generate_content(self, **kw): return _Resp(kw["contents"])
-    def generate_content_stream(self, **kw): return [_Resp("a"), _Resp("b")]
+    def generate_content(self, **kw):
+        return _Resp(kw["contents"])
+
+    def generate_content_stream(self, **kw):
+        return [_Resp("a"), _Resp("b")]
 
 
 class _AioModels:
-    async def generate_content(self, **kw): return _Resp(kw["contents"])
-    async def generate_content_stream(self, **kw): return _AsyncEventStream(["a", "b"])
+    async def generate_content(self, **kw):
+        return _Resp(kw["contents"])
+
+    async def generate_content_stream(self, **kw):
+        return _AsyncEventStream(["a", "b"])
 
 
 class _Aio:
-    def __init__(self): self.models = _AioModels()
+    def __init__(self):
+        self.models = _AioModels()
 
 
 class _Client:
@@ -82,8 +101,12 @@ def test_gemini_async_generate(tmp_path):
 def test_gemini_sync_stream(tmp_path):
     path = tmp_path / "g.jsonl"
     with Cassette.record(path) as c:
-        recorded = [ch.text for ch in wrap_gemini(_Client(), c).models.generate_content_stream(
-            model="m", contents="x")]
+        recorded = [
+            ch.text
+            for ch in wrap_gemini(_Client(), c).models.generate_content_stream(
+                model="m", contents="x"
+            )
+        ]
     with Cassette.replay(path) as c:
         replayed = [  # type: ignore[var-annotated]
             ch.text
@@ -96,8 +119,10 @@ def test_gemini_async_stream(tmp_path):
     path = tmp_path / "g.jsonl"
 
     async def drive(client):
-        return [ch.text async for ch in await client.aio.models.generate_content_stream(
-            model="m", contents="x")]
+        return [
+            ch.text
+            async for ch in await client.aio.models.generate_content_stream(model="m", contents="x")
+        ]
 
     with Cassette.record(path) as c:
         recorded = asyncio.run(drive(wrap_gemini(_Client(), c)))
