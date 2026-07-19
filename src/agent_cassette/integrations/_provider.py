@@ -31,6 +31,8 @@ class ProviderSpec:
     prefixes: frozenset[str]
     raw_response_attrs: frozenset[str] = frozenset({"with_raw_response", "with_streaming_response"})
     unsupported_operations: dict[str, str] = field(default_factory=dict)
+    stream_operations: frozenset[str] = frozenset()
+    async_operations: frozenset[str] = frozenset()
     derive_methods: frozenset[str] = frozenset({"with_options", "copy"})
     async_probe_path: tuple[str, ...] = ()
     streaming_error: type[Exception] = ProviderStreamingUnsupportedError
