@@ -312,11 +312,13 @@ class _ResourceProxy:
     def _wrap_create(self, create: Callable[..., Any] | None, operation: str) -> Callable[..., Any]:
         spec = self._spec
         event_name = spec.event_name(operation)
-        if self._asynchronous:
+        is_async = self._asynchronous or operation in spec.async_operations
+        stream_operation = operation in spec.stream_operations
+        if is_async:
 
             async def async_create(*args: Any, **kwargs: Any) -> Any:
                 request = _serialize_request(args, kwargs)
-                if kwargs.get("stream"):
+                if stream_operation or kwargs.get("stream"):
                     started = perf_counter()
                     replayed, recorded = _prepare_stream(
                         self._cassette,
@@ -370,7 +372,7 @@ class _ResourceProxy:
 
         def sync_create(*args: Any, **kwargs: Any) -> Any:
             request = _serialize_request(args, kwargs)
-            if kwargs.get("stream"):
+            if stream_operation or kwargs.get("stream"):
                 started = perf_counter()
                 replayed, recorded = _prepare_stream(
                     self._cassette,
