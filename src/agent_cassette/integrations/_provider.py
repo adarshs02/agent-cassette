@@ -129,7 +129,7 @@ class _RecordingStream(Iterator[Any]):
             EventType.MODEL_CALL,
             self._spec.event_name(self._operation),
             input=self._request,
-            output=_serialize_stream(self._chunks),
+            output=_serialize_stream(self._chunks, self._spec.response_attributes),
             metadata=_metadata(self._spec, self._operation, streaming=True),
             duration_ms=(perf_counter() - self._started) * 1000,
         )
@@ -142,7 +142,7 @@ class _RecordingStream(Iterator[Any]):
             EventType.ERROR,
             self._spec.event_name(self._operation),
             input=self._request,
-            output=_serialize_stream_error(self._chunks, error),
+            output=_serialize_stream_error(self._chunks, error, self._spec.response_attributes),
             metadata=_stream_error_metadata(self._spec, self._operation),
             duration_ms=(perf_counter() - self._started) * 1000,
         )
@@ -254,7 +254,7 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
             EventType.MODEL_CALL,
             self._spec.event_name(self._operation),
             input=self._request,
-            output=_serialize_stream(self._chunks),
+            output=_serialize_stream(self._chunks, self._spec.response_attributes),
             metadata=_metadata(self._spec, self._operation, streaming=True),
             duration_ms=(perf_counter() - self._started) * 1000,
         )
@@ -267,7 +267,7 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
             EventType.ERROR,
             self._spec.event_name(self._operation),
             input=self._request,
-            output=_serialize_stream_error(self._chunks, error),
+            output=_serialize_stream_error(self._chunks, error, self._spec.response_attributes),
             metadata=_stream_error_metadata(self._spec, self._operation),
             duration_ms=(perf_counter() - self._started) * 1000,
         )
@@ -410,7 +410,9 @@ class _ResourceProxy:
                     request,
                     live_call,
                     metadata=_metadata(spec, operation),
-                    serializer=_serialize_response,
+                    serializer=lambda response: _serialize_response(
+                        response, spec.response_attributes
+                    ),
                 )
                 return _restore_response(recorded)
 
@@ -464,7 +466,9 @@ class _ResourceProxy:
                 request,
                 live_call,
                 metadata=_metadata(spec, operation),
-                serializer=_serialize_response,
+                serializer=lambda response: _serialize_response(
+                    response, spec.response_attributes
+                ),
             )
             return _restore_response(recorded)
 
@@ -583,23 +587,27 @@ def _record_stream_start_error(
         EventType.ERROR,
         spec.event_name(operation),
         input=request,
-        output=_serialize_stream_error([], error),
+        output=_serialize_stream_error([], error, spec.response_attributes),
         metadata=_stream_error_metadata(spec, operation),
         duration_ms=(perf_counter() - started) * 1000,
     )
 
 
-def _serialize_stream(chunks: list[Any]) -> dict[str, Any]:
+def _serialize_stream(
+    chunks: list[Any], response_attributes: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     return {
         "__agent_cassette_stream__": True,
-        "chunks": [_serialize_response(chunk) for chunk in chunks],
+        "chunks": [_serialize_response(chunk, response_attributes) for chunk in chunks],
     }
 
 
-def _serialize_stream_error(chunks: list[Any], error: Exception) -> dict[str, Any]:
+def _serialize_stream_error(
+    chunks: list[Any], error: Exception, response_attributes: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     return {
         "__agent_cassette_stream__": True,
-        "chunks": [_serialize_response(chunk) for chunk in chunks],
+        "chunks": [_serialize_response(chunk, response_attributes) for chunk in chunks],
         "error": {"type": type(error).__name__, "message": str(error)},
     }
 
@@ -635,13 +643,20 @@ def _serialize_request(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[st
     }
 
 
-def _serialize_response(response: Any) -> dict[str, Any]:
+def _serialize_response(
+    response: Any, response_attributes: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     response_type = type(response)
+    data = _to_data(response)
+    if response_attributes and isinstance(data, dict):
+        for attribute in response_attributes:
+            if attribute not in data:
+                data[attribute] = _to_data(getattr(response, attribute, None))
     return {
         "__agent_cassette_response__": True,
         "module": response_type.__module__,
         "class": response_type.__qualname__,
-        "data": _to_data(response),
+        "data": data,
     }
 
 
