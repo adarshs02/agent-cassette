@@ -6,6 +6,12 @@ from agent_cassette.integrations._provider import ProviderSpec, wrap_provider
 from agent_cassette.integrations.openai import OPENAI_SPEC
 
 
+def test_provider_spec_has_response_attributes_default():
+    from agent_cassette.integrations._provider import ProviderSpec
+    spec = ProviderSpec(provider="x", operations=frozenset(), prefixes=frozenset())
+    assert spec.response_attributes == frozenset()
+
+
 def test_provider_spec_has_empty_generalization_defaults():
     spec = ProviderSpec(provider="x", operations=frozenset(), prefixes=frozenset())
     assert spec.stream_operations == frozenset()
