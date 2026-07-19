@@ -1,5 +1,8 @@
 import asyncio
+import sys
+import types
 
+import agent_cassette.automatic as automatic
 from agent_cassette import Cassette
 from agent_cassette.integrations.gemini import GEMINI_SPEC, wrap_gemini
 
@@ -101,3 +104,24 @@ def test_gemini_async_stream(tmp_path):
     with Cassette.replay(path) as c:  # type: ignore[assignment]
         replayed = asyncio.run(drive(wrap_gemini(None, c)))
     assert recorded == replayed == ["A", "B"]
+
+
+def _install_fake_google_genai(monkeypatch):
+    google_pkg = types.ModuleType("google")
+    google_pkg.__path__ = []  # mark as package
+    genai_mod = types.ModuleType("google.genai")
+    genai_mod.Client = _Client  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google", google_pkg)
+    monkeypatch.setitem(sys.modules, "google.genai", genai_mod)
+    return genai_mod
+
+
+def test_patch_gemini_wraps_constructor(tmp_path, monkeypatch):
+    module = _install_fake_google_genai(monkeypatch)
+    path = tmp_path / "g.jsonl"
+    req = {"model": "gemini-2.0-flash", "contents": "works"}
+    with Cassette.record(path) as c, automatic.patch_gemini(c):
+        recorded = module.Client(api_key="x").models.generate_content(**req)  # type: ignore[attr-defined]
+    with Cassette.replay(path) as c, automatic.patch_gemini(c):  # type: ignore[assignment]
+        replayed = module.Client(api_key="x").models.generate_content(**req)  # type: ignore[attr-defined]
+    assert recorded.text == replayed.text == "WORKS"
