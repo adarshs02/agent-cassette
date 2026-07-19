@@ -58,3 +58,49 @@ def test_sync_and_async_ops_coexist_on_one_client(tmp_path):
         client = wrap_provider(None, cassette, SPEC)
         assert client.chat.go(model="m", messages=[]).text == "SYNC"
         assert asyncio.run(client.chat.go_async(model="m", messages=[])).text == "ASYNC"
+
+
+class _EventCM:
+    """Mimics mistralai: a context manager whose entered value is the iterator."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def __enter__(self):
+        return iter(self._events)
+
+    def __exit__(self, *a):
+        return False
+
+
+class _StreamChat:
+    def stream(self, **kw):
+        return _EventCM([_Resp("A"), _Resp("B")])
+
+
+class _StreamClient:
+    def __init__(self):
+        self.chat = _StreamChat()
+
+
+STREAM_SPEC = ProviderSpec(
+    provider="demo",
+    operations=frozenset({"chat.stream"}),
+    prefixes=frozenset({"chat"}),
+    stream_operations=frozenset({"chat.stream"}),
+)
+
+
+def test_context_manager_stream_records_and_replays(tmp_path):
+    path = tmp_path / "stream.jsonl"
+    with Cassette.record(path) as cassette:
+        client = wrap_provider(_StreamClient(), cassette, STREAM_SPEC)
+        with client.chat.stream(model="m", messages=[]) as events:
+            recorded = [e.text for e in events]
+    assert recorded == ["A", "B"]
+
+    with Cassette.replay(path) as cassette:
+        client = wrap_provider(None, cassette, STREAM_SPEC)
+        with client.chat.stream(model="m", messages=[]) as events:
+            replayed = [e.text for e in events]
+    assert replayed == ["A", "B"]

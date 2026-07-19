@@ -63,7 +63,12 @@ class _RecordingStream(Iterator[Any]):
         started: float,
     ) -> None:
         self._stream = stream
-        self._iterator = iter(stream)
+        try:
+            self._iterator: Any = iter(stream)
+        except TypeError:
+            if not hasattr(stream, "__enter__"):
+                raise  # genuinely not a stream; fail fast like before
+            self._iterator = None  # entered lazily via __enter__
         self._cassette = cassette
         self._spec = spec
         self._operation = operation
@@ -76,6 +81,8 @@ class _RecordingStream(Iterator[Any]):
         return self
 
     def __next__(self) -> Any:
+        if self._iterator is None:
+            raise TypeError("stream must be entered as a context manager before iteration")
         try:
             chunk = next(self._iterator)
         except StopIteration:
@@ -151,7 +158,12 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
         started: float,
     ) -> None:
         self._stream = stream
-        self._iterator = stream.__aiter__()
+        try:
+            self._iterator: Any = stream.__aiter__()
+        except (TypeError, AttributeError):
+            if not hasattr(stream, "__aenter__"):
+                raise  # genuinely not a stream; fail fast like before
+            self._iterator = None  # entered lazily via __aenter__
         self._cassette = cassette
         self._spec = spec
         self._operation = operation
@@ -164,6 +176,8 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
         return self
 
     async def __anext__(self) -> Any:
+        if self._iterator is None:
+            raise TypeError("stream must be entered as a context manager before iteration")
         try:
             chunk = await self._iterator.__anext__()
         except StopAsyncIteration:
@@ -244,6 +258,12 @@ class _ReplayStream(Iterator[Any]):
     def __iter__(self) -> _ReplayStream:
         return self
 
+    def __enter__(self) -> _ReplayStream:
+        return self
+
+    def __exit__(self, exc_type: object, exc: BaseException | None, traceback: object) -> None:
+        return None
+
     def __next__(self) -> Any:
         try:
             return next(self._chunks)
@@ -261,6 +281,14 @@ class _AsyncReplayStream(AsyncIterator[Any]):
 
     def __aiter__(self) -> _AsyncReplayStream:
         return self
+
+    async def __aenter__(self) -> _AsyncReplayStream:
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc: BaseException | None, traceback: object
+    ) -> None:
+        return None
 
     async def __anext__(self) -> Any:
         try:
