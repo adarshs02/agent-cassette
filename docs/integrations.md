@@ -43,8 +43,8 @@ Install `agent-cassette[gemini]` and the Gemini client is patched for each `reco
 run. Python callers can also wrap explicitly with `wrap_gemini` or patch the constructor with
 `patch_gemini`.
 
-Supported operations: sync `generate_content`, async `generate_content_async`, and streaming
-`generate_content_stream` / `generate_content_stream_async`. On replay, these calls return
+Supported operations: sync `models.generate_content`, async `aio.models.generate_content`, and streaming
+`models.generate_content_stream` / `aio.models.generate_content_stream`. On replay, these calls return
 inert, attribute-compatible responses from the cassette with `response.text` preserved: no
 client, no key, no network, no dynamic imports.
 
