@@ -54,15 +54,22 @@ class GeminiAlreadyPatchedError(RuntimeError):
     """Raised when the same google-genai module is patched by a nested context."""
 
 
-def _load_module(name: str, unavailable_error: type[ImportError]) -> Any:
+def _load_module(
+    name: str,
+    unavailable_error: type[ImportError],
+    *,
+    extra: str | None = None,
+) -> Any:
+    extra = name if extra is None else extra
     try:
         return importlib.import_module(name)
     except ModuleNotFoundError as error:
-        if error.name != name:
+        missing = error.name or ""
+        if missing != name and not name.startswith(missing + "."):
             raise
         raise unavailable_error(
             f"Automatic {name} recording requires the optional '{name}' package; "
-            f"install it with `pip install agent-cassette[{name}]`."
+            f"install it with `pip install agent-cassette[{extra}]`."
         ) from error
 
 
@@ -144,8 +151,10 @@ def _patch_single_constructor(
     wrapper: Callable[..., Any],
     unavailable_error: type[ImportError],
     already_patched_error: type[RuntimeError],
+    *,
+    extra: str | None = None,
 ) -> Iterator[None]:
-    module = _load_module(module_name, unavailable_error)
+    module = _load_module(module_name, unavailable_error, extra=extra)
     module_identity = (module_name, id(module))
     try:
         original = getattr(module, constructor_name)
@@ -228,6 +237,7 @@ def patch_mistral(cassette: Any) -> Iterator[None]:
         wrap_mistral,
         MistralUnavailableError,
         MistralAlreadyPatchedError,
+        extra="mistral",
     ):
         yield
 
@@ -249,6 +259,7 @@ def patch_gemini(cassette: Any) -> Iterator[None]:
         wrap_gemini,
         GeminiUnavailableError,
         GeminiAlreadyPatchedError,
+        extra="gemini",
     ):
         yield
 

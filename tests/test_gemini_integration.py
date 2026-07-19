@@ -2,8 +2,11 @@ import asyncio
 import sys
 import types
 
+import pytest
+
 import agent_cassette.automatic as automatic
 from agent_cassette import Cassette
+from agent_cassette.automatic import GeminiUnavailableError
 from agent_cassette.integrations.gemini import GEMINI_SPEC, wrap_gemini
 
 
@@ -150,3 +153,24 @@ def test_patch_gemini_wraps_constructor(tmp_path, monkeypatch):
     with Cassette.replay(path) as c, automatic.patch_gemini(c):  # type: ignore[assignment]
         replayed = module.Client(api_key="x").models.generate_content(**req)  # type: ignore[attr-defined]
     assert recorded.text == replayed.text == "WORKS"
+
+
+def test_missing_gemini_dependency_has_install_hint(monkeypatch, tmp_path):
+    monkeypatch.delitem(sys.modules, "google.genai", raising=False)
+    monkeypatch.delitem(sys.modules, "google", raising=False)
+
+    def missing_google(name, *args, **kwargs):
+        assert name == "google.genai"
+        # ``google`` (the top-level namespace package) is what's actually
+        # absent; Python surfaces that as the failing import's ``name``.
+        raise ModuleNotFoundError("No module named 'google'", name="google")
+
+    monkeypatch.setattr("agent_cassette.automatic.importlib.import_module", missing_google)
+
+    with Cassette.record(tmp_path / "missing.jsonl") as cassette:
+        with pytest.raises(GeminiUnavailableError, match=r"agent-cassette\[gemini\]") as excinfo:
+            with automatic.patch_gemini(cassette):
+                pass
+
+    assert "agent-cassette[gemini]" in str(excinfo.value)
+    assert "agent-cassette[google.genai]" not in str(excinfo.value)

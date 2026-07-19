@@ -2,8 +2,11 @@ import asyncio
 import sys
 import types
 
+import pytest
+
 import agent_cassette.automatic as automatic
 from agent_cassette import Cassette
+from agent_cassette.automatic import MistralUnavailableError
 from agent_cassette.integrations.mistral import MISTRAL_SPEC, wrap_mistral
 
 
@@ -165,3 +168,21 @@ def test_patch_mistral_wraps_constructor(tmp_path, monkeypatch):
     with Cassette.replay(path) as c, automatic.patch_mistral(c):  # type: ignore[assignment]
         replayed = module.Mistral(api_key="x").chat.complete(**request)
     assert recorded.text == replayed.text == "WORKS"
+
+
+def test_missing_mistral_dependency_has_install_hint(monkeypatch, tmp_path):
+    monkeypatch.delitem(sys.modules, "mistralai", raising=False)
+
+    def missing_mistralai(name, *args, **kwargs):
+        assert name == "mistralai"
+        raise ModuleNotFoundError("No module named 'mistralai'", name="mistralai")
+
+    monkeypatch.setattr("agent_cassette.automatic.importlib.import_module", missing_mistralai)
+
+    with Cassette.record(tmp_path / "missing.jsonl") as cassette:
+        with pytest.raises(MistralUnavailableError, match=r"agent-cassette\[mistral\]") as excinfo:
+            with automatic.patch_mistral(cassette):
+                pass
+
+    assert "agent-cassette[mistral]" in str(excinfo.value)
+    assert "agent-cassette[mistralai]" not in str(excinfo.value)
