@@ -19,6 +19,7 @@ from agent_cassette.assertions import (
 from agent_cassette.automatic import (
     automatic_openai_from_env,
     patch_anthropic,
+    patch_gemini,
     patch_mistral,
     patch_openai,
 )
@@ -28,6 +29,7 @@ from agent_cassette.diff import DiffReport, compare_cassettes
 from agent_cassette.events import Event, EventType, register_migration, unregister_migration
 from agent_cassette.hybrid import Delay, Hybrid, InjectionRule, Raise, Return
 from agent_cassette.integrations.anthropic import wrap_anthropic
+from agent_cassette.integrations.gemini import wrap_gemini
 from agent_cassette.integrations.mcp import wrap_mcp
 from agent_cassette.integrations.mistral import wrap_mistral
 from agent_cassette.integrations.openai import wrap_openai
@@ -101,6 +103,7 @@ __all__ = [
     "migrate_event_dict",
     "no_errors",
     "patch_anthropic",
+    "patch_gemini",
     "patch_mistral",
     "patch_openai",
     "patch_openai_agents",
@@ -109,6 +112,7 @@ __all__ = [
     "render_viewer",
     "unregister_migration",
     "wrap_anthropic",
+    "wrap_gemini",
     "wrap_langchain",
     "wrap_mcp",
     "wrap_mistral",

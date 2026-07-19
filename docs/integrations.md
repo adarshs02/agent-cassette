@@ -37,6 +37,17 @@ Supported operations: sync `chat.complete`, async `chat.complete_async`, and str
 `chat.stream` / `chat.stream_async`. On replay, these calls return inert, attribute-compatible
 responses from the cassette: no client, no key, no network, no dynamic imports.
 
+## Gemini
+
+Install `agent-cassette[gemini]` and the Gemini client is patched for each `record`/`replay`
+run. Python callers can also wrap explicitly with `wrap_gemini` or patch the constructor with
+`patch_gemini`.
+
+Supported operations: sync `models.generate_content`, async `aio.models.generate_content`, and streaming
+`models.generate_content_stream` / `aio.models.generate_content_stream`. On replay, these calls return
+inert, attribute-compatible responses from the cassette with `response.text` preserved: no
+client, no key, no network, no dynamic imports.
+
 ## LangChain
 
 Wrap a Runnable at its execution boundary:

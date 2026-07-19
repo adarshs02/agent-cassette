@@ -1,7 +1,7 @@
 """Automatic provider recording and replay contexts.
 
 This module deliberately imports the optional provider SDKs (``openai``,
-``anthropic``, ``mistralai``) only when the matching patch context is entered.
+``anthropic``, ``mistralai``, ``google-genai``) only when the matching patch context is entered.
 """
 
 from __future__ import annotations
@@ -46,15 +46,30 @@ class MistralAlreadyPatchedError(RuntimeError):
     """Raised when the same Mistral module is patched by a nested context."""
 
 
-def _load_module(name: str, unavailable_error: type[ImportError]) -> Any:
+class GeminiUnavailableError(ImportError):
+    """Raised when automatic Gemini support is requested without google-genai installed."""
+
+
+class GeminiAlreadyPatchedError(RuntimeError):
+    """Raised when the same google-genai module is patched by a nested context."""
+
+
+def _load_module(
+    name: str,
+    unavailable_error: type[ImportError],
+    *,
+    extra: str | None = None,
+) -> Any:
+    extra = name if extra is None else extra
     try:
         return importlib.import_module(name)
     except ModuleNotFoundError as error:
-        if error.name != name:
+        missing = error.name or ""
+        if missing != name and not name.startswith(missing + "."):
             raise
         raise unavailable_error(
             f"Automatic {name} recording requires the optional '{name}' package; "
-            f"install it with `pip install agent-cassette[{name}]`."
+            f"install it with `pip install agent-cassette[{extra}]`."
         ) from error
 
 
@@ -136,8 +151,10 @@ def _patch_single_constructor(
     wrapper: Callable[..., Any],
     unavailable_error: type[ImportError],
     already_patched_error: type[RuntimeError],
+    *,
+    extra: str | None = None,
 ) -> Iterator[None]:
-    module = _load_module(module_name, unavailable_error)
+    module = _load_module(module_name, unavailable_error, extra=extra)
     module_identity = (module_name, id(module))
     try:
         original = getattr(module, constructor_name)
@@ -220,6 +237,29 @@ def patch_mistral(cassette: Any) -> Iterator[None]:
         wrap_mistral,
         MistralUnavailableError,
         MistralAlreadyPatchedError,
+        extra="mistral",
+    ):
+        yield
+
+
+@contextmanager
+def patch_gemini(cassette: Any) -> Iterator[None]:
+    """Temporarily wrap clients created by ``google.genai.Client``.
+
+    The single client carries both sync and async (``client.aio``) operations; the
+    constructor is wrapped with ``asynchronous=False`` and per-operation async routing
+    is handled by ``GEMINI_SPEC``.
+    """
+    from agent_cassette.integrations.gemini import wrap_gemini
+
+    with _patch_single_constructor(
+        cassette,
+        "google.genai",
+        "Client",
+        wrap_gemini,
+        GeminiUnavailableError,
+        GeminiAlreadyPatchedError,
+        extra="gemini",
     ):
         yield
 
@@ -253,12 +293,15 @@ patch_openai_from_env = automatic_openai_from_env
 __all__ = [
     "AnthropicAlreadyPatchedError",
     "AnthropicUnavailableError",
+    "GeminiAlreadyPatchedError",
+    "GeminiUnavailableError",
     "MistralAlreadyPatchedError",
     "MistralUnavailableError",
     "OpenAIAlreadyPatchedError",
     "OpenAIUnavailableError",
     "automatic_openai_from_env",
     "patch_anthropic",
+    "patch_gemini",
     "patch_mistral",
     "patch_openai",
     "patch_openai_from_env",

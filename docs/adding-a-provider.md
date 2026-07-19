@@ -47,6 +47,9 @@ MY_PROVIDER_SPEC = ProviderSpec(
         # "chat.complete_async" on the same client as "chat.complete"
     }),
     async_probe_path=(),                # (optional) path to introspect async client type
+    response_attributes=frozenset({     # (optional) computed response properties to preserve
+        # e.g., "text" for Gemini, which is computed from underlying model response
+    }),
     streaming_error=MyProviderStreamingUnsupportedError,
     raw_response_error=MyProviderRawResponseUnsupportedError,
 )
@@ -58,6 +61,15 @@ MY_PROVIDER_SPEC = ProviderSpec(
 - `stream_operations`: `{chat.stream, chat.stream_async}` (separate methods, not `stream=True`)
 - `async_operations`: `{chat.complete_async, chat.stream_async}` (per-method async on one client)
 - `async_probe_path`: `()` (single-client Mistral, not a sync/async class pair)
+- `response_attributes`: `{}` (no computed properties to preserve)
+
+**Gemini example** ([src/agent_cassette/integrations/gemini.py](../src/agent_cassette/integrations/gemini.py)):
+- `operations`: `{models.generate_content, models.generate_content_stream, aio.models.generate_content, aio.models.generate_content_stream}`
+- `prefixes`: `{models, aio, aio.models}` (sync under `models`, async under `aio.models`)
+- `stream_operations`: `{models.generate_content_stream, aio.models.generate_content_stream}` (separate methods)
+- `async_operations`: `{aio.models.generate_content, aio.models.generate_content_stream}` (async lives under `aio.models` subtree, not `_async` suffix)
+- `async_probe_path`: `()` (single-client Gemini, not a sync/async class pair)
+- `response_attributes`: `{"text"}` (computed from underlying model response, preserved on replay)
 
 ## Step 2: Implement the wrapper function
 

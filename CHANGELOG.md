@@ -10,8 +10,13 @@ All notable changes to Agent Cassette are documented here. The format follows
 - Mistral provider support (`wrap_mistral`, `patch_mistral`, `agent-cassette[mistral]`):
   sync `chat.complete`, async `chat.complete_async`, and streaming `chat.stream` /
   `chat.stream_async`.
+- Gemini (`google-genai`) provider support (`wrap_gemini`, `patch_gemini`,
+  `agent-cassette[gemini]`): sync/async `generate_content` and streaming
+  `generate_content_stream`, with `response.text` preserved on replay.
 - Provider foundation: per-operation async and stream-operation triggering, and
   context-manager-tolerant record/replay streams.
+- Provider foundation: `response_attributes` capture for computed response
+  properties.
 
 ## [1.0.0] - 2026-07-18
 

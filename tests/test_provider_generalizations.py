@@ -6,6 +6,13 @@ from agent_cassette.integrations._provider import ProviderSpec, wrap_provider
 from agent_cassette.integrations.openai import OPENAI_SPEC
 
 
+def test_provider_spec_has_response_attributes_default():
+    from agent_cassette.integrations._provider import ProviderSpec
+
+    spec = ProviderSpec(provider="x", operations=frozenset(), prefixes=frozenset())
+    assert spec.response_attributes == frozenset()
+
+
 def test_provider_spec_has_empty_generalization_defaults():
     spec = ProviderSpec(provider="x", operations=frozenset(), prefixes=frozenset())
     assert spec.stream_operations == frozenset()
@@ -105,3 +112,44 @@ def test_context_manager_stream_records_and_replays(tmp_path):
         with client.chat.stream(model="m", messages=[]) as events:  # type: Iterator[_Resp]
             replayed = [e.text for e in events]
     assert replayed == ["A", "B"]
+
+
+def test_response_attributes_are_captured_and_replayed(tmp_path):
+    from agent_cassette import Cassette
+    from agent_cassette.integrations._provider import ProviderSpec, wrap_provider
+
+    class _Resp:
+        def __init__(self, value):
+            self._value = value
+
+        def model_dump(self, mode=None):
+            return {"raw": self._value}
+
+        @property
+        def text(self):
+            return self._value.upper()
+
+    class _Models:
+        def generate(self, **kw):
+            return _Resp(kw["contents"])
+
+    class _Client:
+        def __init__(self):
+            self.models = _Models()
+
+    spec = ProviderSpec(
+        provider="demo",
+        operations=frozenset({"models.generate"}),
+        prefixes=frozenset({"models"}),
+        response_attributes=frozenset({"text"}),
+    )
+    path = tmp_path / "demo.jsonl"
+    with Cassette.record(path) as c:
+        recorded = wrap_provider(_Client(), c, spec).models.generate(contents="works")
+    assert recorded.text == "WORKS"
+    with Cassette.replay(path) as c:  # type: ignore[assignment]
+        replayed = wrap_provider(None, c, spec).models.generate(  # type: ignore[var-annotated]
+            contents="works"
+        )
+    assert replayed.text == "WORKS"  # computed property survives replay
+    assert replayed.raw == "works"  # serialized field still present
