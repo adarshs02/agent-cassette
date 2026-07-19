@@ -78,12 +78,30 @@ constructor. Add a factory patch mode to `automatic.py`: wrap the factory functi
 it returns a wrapped client when `service_name` matches the target service and passes
 through otherwise. Bedrock also uses G1 for its flat operations.
 
+### G5 — per-method async (`_async` suffix on one client)
+Mistral exposes both sync and async on a **single** client: `client.chat.complete`
+and `client.chat.complete_async` (plus `stream` / `stream_async`). The current async
+model is whole-client (a parallel `Async*` class); a single per-proxy `asynchronous`
+flag cannot serve a client that carries both. Add a spec field
+`async_operations: frozenset[str]` naming the operations that are asynchronous. In
+`_wrap_create`, the operation wraps as async when `self._asynchronous` is true **or**
+`operation in spec.async_operations`. This is spec-driven, so it also works on replay
+(`client=None`, no method to introspect). Auto-patching such a client uses a
+**single-constructor** mode (the client is not a Sync/Async class pair), wrapped with
+`asynchronous=False` so per-operation async governs.
+
+Replay of streaming methods that the SDK requires be used as a context manager
+(`with client.chat.stream(...) as events:`) needs the replay stream objects
+(`_ReplayStream`, `_AsyncReplayStream`) to support the (a)sync context-manager protocol
+returning `self`; today only the recording streams do.
+
 ## `ProviderSpec` additions
 
 Backward-compatible, all defaulted:
 
 - `stream_operations: frozenset[str] = frozenset()` (G2)
 - `async_subtrees: frozenset[str] = frozenset()` (G3)
+- `async_operations: frozenset[str] = frozenset()` (G5)
 
 G1 needs no field. G4 lives in `automatic.py`, not the spec. The OpenAI and Anthropic
 specs are not modified, so their behavior and recorded shapes are unchanged.
@@ -120,8 +138,10 @@ change, so their frozen snapshots stay intact.
 
 Each phase is its own spec → plan → implementation → PR.
 
-1. **Mistral** — closest to the current pattern; decides G2 (stream method vs
-   unsupported); proves the end-to-end recipe and writes `docs/adding-a-provider.md`.
+1. **Mistral** — full sync + async + streaming. Drives G2 (`chat.stream`), G5
+   (`complete_async`/`stream_async` on one client), single-constructor auto-patch, and
+   replay-stream context-manager support. Proves the end-to-end recipe and writes
+   `docs/adding-a-provider.md`.
 2. **Gemini** — implements G2 + G3 (`.aio` subtree, `generate_content_stream`).
 3. **Cohere** — implements G1 (flat `chat`).
 4. **Vertex AI** — model-instance shape (`GenerativeModel(name).generate_content`);
