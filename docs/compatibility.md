@@ -10,6 +10,7 @@ and the repository's full current-dependency suite pass.
 | OpenAI Python | `>=1.0,<3` | installed-wheel import and adapter smoke | locked SDK and full suite |
 | Anthropic Python | `>=0.34,<1` | installed-wheel import and adapter smoke | locked SDK and full suite |
 | OpenAI Agents | `>=0.1,<1` | installed-wheel import and hooks smoke | locked SDK and full suite |
+| Mistral Python | `>=1,<2` | installed-wheel import and adapter smoke | locked SDK and full suite |
 | LangChain Core | `>=0.3,<2` | Runnable/callback replay with 0.3.0 | locked Runnable/callback replay |
 
 Core, each optional extra, and the `all` extra are installed in separate clean
