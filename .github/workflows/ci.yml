@@ -168,6 +168,14 @@ jobs:
             python-version: "3.13"
             extra: langchain
             dependency-spec: ""
+          - compatibility: mistral-minimum
+            python-version: "3.10"
+            extra: mistral
+            dependency-spec: "mistralai==1.0.0"
+          - compatibility: mistral-current
+            python-version: "3.13"
+            extra: mistral
+            dependency-spec: ""
           - compatibility: all-current
             python-version: "3.13"
             extra: all
@@ -346,6 +354,28 @@ jobs:
                       "answer": "WORKS"
                   }
               assert nonlocal_calls == [1]
+          elif case == "mistral":
+              import mistralai
+              from agent_cassette import wrap_mistral
+
+              class Resp:
+                  def __init__(self, text): self.text = text
+                  def model_dump(self, mode=None): return {"text": self.text}
+
+              class Chat:
+                  def complete(self, **kw): return Resp(kw["messages"][0]["content"].upper())
+
+              class Client:
+                  def __init__(self): self.chat = Chat()
+
+              request = {"model": "offline", "messages": [{"role": "user", "content": "works"}]}
+              with Cassette.record(path) as cassette:
+                  recorded = wrap_mistral(Client(), cassette).chat.complete(**request)
+              disable_network()
+              with Cassette.replay(path) as cassette:
+                  replayed = wrap_mistral(None, cassette).chat.complete(**request)
+              assert recorded.text == replayed.text == "WORKS"
+              assert mistralai.__name__ == "mistralai"
           elif case == "all":
               import agents
               import anthropic
