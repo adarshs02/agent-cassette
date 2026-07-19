@@ -1,5 +1,8 @@
 import asyncio
+import sys
+import types
 
+import agent_cassette.automatic as automatic
 from agent_cassette import Cassette
 from agent_cassette.integrations.mistral import MISTRAL_SPEC, wrap_mistral
 
@@ -94,3 +97,21 @@ def test_mistral_async_stream(tmp_path):
     with Cassette.replay(path) as c:  # type: ignore[assignment]
         replayed = asyncio.run(drive(wrap_mistral(None, c)))
     assert recorded == replayed == ["A", "B"]
+
+
+def _install_fake_mistralai(monkeypatch):
+    module = types.ModuleType("mistralai")
+    module.Mistral = _Mistral  # type: ignore[attr-defined]  # from earlier in this file
+    monkeypatch.setitem(sys.modules, "mistralai", module)
+    return module
+
+
+def test_patch_mistral_wraps_constructor(tmp_path, monkeypatch):
+    module = _install_fake_mistralai(monkeypatch)
+    path = tmp_path / "m.jsonl"
+    request = {"model": "m", "messages": [{"role": "user", "content": "works"}]}
+    with Cassette.record(path) as c, automatic.patch_mistral(c):
+        recorded = module.Mistral(api_key="x").chat.complete(**request)
+    with Cassette.replay(path) as c, automatic.patch_mistral(c):  # type: ignore[assignment]
+        replayed = module.Mistral(api_key="x").chat.complete(**request)
+    assert recorded.text == replayed.text == "WORKS"
