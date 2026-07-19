@@ -16,7 +16,12 @@ from agent_cassette.assertions import (
     max_total_duration_ms,
     no_errors,
 )
-from agent_cassette.automatic import automatic_openai_from_env, patch_anthropic, patch_openai
+from agent_cassette.automatic import (
+    automatic_openai_from_env,
+    patch_anthropic,
+    patch_mistral,
+    patch_openai,
+)
 from agent_cassette.cassette import Cassette
 from agent_cassette.deprecations import AgentCassetteDeprecationWarning
 from agent_cassette.diff import DiffReport, compare_cassettes
@@ -24,6 +29,7 @@ from agent_cassette.events import Event, EventType, register_migration, unregist
 from agent_cassette.hybrid import Delay, Hybrid, InjectionRule, Raise, Return
 from agent_cassette.integrations.anthropic import wrap_anthropic
 from agent_cassette.integrations.mcp import wrap_mcp
+from agent_cassette.integrations.mistral import wrap_mistral
 from agent_cassette.integrations.openai import wrap_openai
 from agent_cassette.integrations.openai_agents import AgentCassetteRunHooks, patch_openai_agents
 from agent_cassette.interop import export_otlp, import_otlp
@@ -95,6 +101,7 @@ __all__ = [
     "migrate_event_dict",
     "no_errors",
     "patch_anthropic",
+    "patch_mistral",
     "patch_openai",
     "patch_openai_agents",
     "register_migration",
@@ -104,6 +111,7 @@ __all__ = [
     "wrap_anthropic",
     "wrap_langchain",
     "wrap_mcp",
+    "wrap_mistral",
     "wrap_openai",
     "write_viewer",
 ]
