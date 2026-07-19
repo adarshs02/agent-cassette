@@ -46,6 +46,7 @@ EXPECTED_PUBLIC_API = {
     "migrate_event_dict",
     "no_errors",
     "patch_anthropic",
+    "patch_mistral",
     "patch_openai",
     "patch_openai_agents",
     "recover_cassette",
@@ -55,6 +56,7 @@ EXPECTED_PUBLIC_API = {
     "wrap_anthropic",
     "wrap_langchain",
     "wrap_mcp",
+    "wrap_mistral",
     "wrap_openai",
     "write_viewer",
 }
@@ -71,7 +73,7 @@ def test_core_import_does_not_load_optional_dependencies(tmp_path) -> None:
         """
         import sys
 
-        blocked = {"agents", "anthropic", "langchain_core", "openai"}
+        blocked = {"agents", "anthropic", "langchain_core", "mistralai", "openai"}
 
         class BlockOptionalDependencies:
             def find_spec(self, fullname, path=None, target=None):

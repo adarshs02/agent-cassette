@@ -6,6 +6,13 @@ All notable changes to Agent Cassette are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Mistral provider support (`wrap_mistral`, `patch_mistral`, `agent-cassette[mistral]`):
+  sync `chat.complete`, async `chat.complete_async`, and streaming `chat.stream` /
+  `chat.stream_async`.
+- Provider foundation: per-operation async and stream-operation triggering, and
+  context-manager-tolerant record/replay streams.
+
 ## [1.0.0] - 2026-07-18
 
 First stable release. The public API, CLI tree, adapter protocol, and cassette

@@ -57,6 +57,7 @@ Your code needs no changes — supported clients (OpenAI, Anthropic) are patched
 | [Beta & upgrades](docs/beta-upgrade.md) | Beta status and migrations |
 | [Security model](docs/security.md) | Redaction, replay safety, current limits |
 | [Public API](docs/public-api.md) | Exported surface |
+| [Adding a provider](docs/adding-a-provider.md) | Extend record/replay to a new SDK |
 
 Contributing? Setup and test commands live in [AGENTS.md](AGENTS.md).
 

@@ -1,7 +1,7 @@
 """Automatic provider recording and replay contexts.
 
 This module deliberately imports the optional provider SDKs (``openai``,
-``anthropic``) only when the matching patch context is entered.
+``anthropic``, ``mistralai``) only when the matching patch context is entered.
 """
 
 from __future__ import annotations
@@ -36,6 +36,14 @@ class AnthropicUnavailableError(ImportError):
 
 class AnthropicAlreadyPatchedError(RuntimeError):
     """Raised when the same Anthropic module is patched by a nested context."""
+
+
+class MistralUnavailableError(ImportError):
+    """Raised when automatic Mistral support is requested without Mistral installed."""
+
+
+class MistralAlreadyPatchedError(RuntimeError):
+    """Raised when the same Mistral module is patched by a nested context."""
 
 
 def _load_module(name: str, unavailable_error: type[ImportError]) -> Any:
@@ -121,6 +129,43 @@ def _patch_constructors(
 
 
 @contextmanager
+def _patch_single_constructor(
+    cassette: Any,
+    module_name: str,
+    constructor_name: str,
+    wrapper: Callable[..., Any],
+    unavailable_error: type[ImportError],
+    already_patched_error: type[RuntimeError],
+) -> Iterator[None]:
+    module = _load_module(module_name, unavailable_error)
+    module_identity = (module_name, id(module))
+    try:
+        original = getattr(module, constructor_name)
+    except AttributeError as error:
+        raise unavailable_error(
+            f"The installed '{module_name}' package does not expose {constructor_name}."
+        ) from error
+    with _PATCH_LOCK:
+        if module_identity in _PATCHED_MODULES:
+            raise already_patched_error(
+                f"{module_name} constructors are already patched; nested patch contexts "
+                "for the same module are not supported."
+            )
+        _PATCHED_MODULES.add(module_identity)
+        setattr(
+            module,
+            constructor_name,
+            _wrapped_constructor(original, cassette, wrapper, asynchronous=False),
+        )
+    try:
+        yield
+    finally:
+        with _PATCH_LOCK:
+            setattr(module, constructor_name, original)
+            _PATCHED_MODULES.remove(module_identity)
+
+
+@contextmanager
 def patch_openai(cassette: Any) -> Iterator[None]:
     """Temporarily wrap clients created by ``OpenAI`` and ``AsyncOpenAI``.
 
@@ -159,6 +204,27 @@ def patch_anthropic(cassette: Any) -> Iterator[None]:
 
 
 @contextmanager
+def patch_mistral(cassette: Any) -> Iterator[None]:
+    """Temporarily wrap clients created by ``mistralai.Mistral``.
+
+    The single Mistral client carries both sync and async operations; the
+    constructor is wrapped with ``asynchronous=False`` and per-operation async
+    routing is handled by ``MISTRAL_SPEC``.
+    """
+    from agent_cassette.integrations.mistral import wrap_mistral
+
+    with _patch_single_constructor(
+        cassette,
+        "mistralai",
+        "Mistral",
+        wrap_mistral,
+        MistralUnavailableError,
+        MistralAlreadyPatchedError,
+    ):
+        yield
+
+
+@contextmanager
 def automatic_openai_from_env(
     environ: Mapping[str, str] | None = None,
 ) -> Iterator[Any]:
@@ -187,10 +253,13 @@ patch_openai_from_env = automatic_openai_from_env
 __all__ = [
     "AnthropicAlreadyPatchedError",
     "AnthropicUnavailableError",
+    "MistralAlreadyPatchedError",
+    "MistralUnavailableError",
     "OpenAIAlreadyPatchedError",
     "OpenAIUnavailableError",
     "automatic_openai_from_env",
     "patch_anthropic",
+    "patch_mistral",
     "patch_openai",
     "patch_openai_from_env",
 ]

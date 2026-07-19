@@ -31,6 +31,8 @@ class ProviderSpec:
     prefixes: frozenset[str]
     raw_response_attrs: frozenset[str] = frozenset({"with_raw_response", "with_streaming_response"})
     unsupported_operations: dict[str, str] = field(default_factory=dict)
+    stream_operations: frozenset[str] = frozenset()
+    async_operations: frozenset[str] = frozenset()
     derive_methods: frozenset[str] = frozenset({"with_options", "copy"})
     async_probe_path: tuple[str, ...] = ()
     streaming_error: type[Exception] = ProviderStreamingUnsupportedError
@@ -61,7 +63,12 @@ class _RecordingStream(Iterator[Any]):
         started: float,
     ) -> None:
         self._stream = stream
-        self._iterator = iter(stream)
+        try:
+            self._iterator: Any = iter(stream)
+        except TypeError:
+            if not hasattr(stream, "__enter__"):
+                raise  # genuinely not a stream; fail fast like before
+            self._iterator = None  # entered lazily via __enter__
         self._cassette = cassette
         self._spec = spec
         self._operation = operation
@@ -74,6 +81,8 @@ class _RecordingStream(Iterator[Any]):
         return self
 
     def __next__(self) -> Any:
+        if self._iterator is None:
+            raise TypeError("stream must be entered as a context manager before iteration")
         try:
             chunk = next(self._iterator)
         except StopIteration:
@@ -148,8 +157,15 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
         request: Any,
         started: float,
     ) -> None:
+        # ``stream`` is normally the concrete async iterable/context-manager
+        # already, because the async wrapper awaits the underlying coroutine
+        # (e.g. mistralai's ``chat.stream_async`` or an ``AsyncOpenAI``-style
+        # ``create(stream=True)``) before constructing this object. The
+        # ``inspect.isawaitable`` branch in ``_resolve`` remains load-bearing
+        # for any stream that is itself still an awaitable when handed over.
         self._stream = stream
-        self._iterator = stream.__aiter__()
+        self._resolved = False
+        self._iterator: Any = None
         self._cassette = cassette
         self._spec = spec
         self._operation = operation
@@ -161,7 +177,28 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
     def __aiter__(self) -> _AsyncRecordingStream:
         return self
 
+    async def _resolve(self) -> None:
+        if self._resolved:
+            return
+        self._resolved = True
+        stream = self._stream
+        if inspect.isawaitable(stream):
+            stream = await stream
+            self._stream = stream
+        try:
+            self._iterator = stream.__aiter__()
+        except (TypeError, AttributeError) as error:
+            if not hasattr(stream, "__aenter__"):
+                raise self._spec.streaming_error(
+                    f"{self._spec.provider} streaming capture requires an async iterable "
+                    "stream; call with stream=False"
+                ) from error
+            self._iterator = None  # entered lazily via __aenter__
+
     async def __anext__(self) -> Any:
+        await self._resolve()
+        if self._iterator is None:
+            raise TypeError("stream must be entered as a context manager before iteration")
         try:
             chunk = await self._iterator.__anext__()
         except StopAsyncIteration:
@@ -174,6 +211,7 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
         return chunk
 
     async def __aenter__(self) -> _AsyncRecordingStream:
+        await self._resolve()
         enter = getattr(self._stream, "__aenter__", None)
         if callable(enter):
             entered = await cast(Any, enter())
@@ -242,6 +280,12 @@ class _ReplayStream(Iterator[Any]):
     def __iter__(self) -> _ReplayStream:
         return self
 
+    def __enter__(self) -> _ReplayStream:
+        return self
+
+    def __exit__(self, exc_type: object, exc: BaseException | None, traceback: object) -> None:
+        return None
+
     def __next__(self) -> Any:
         try:
             return next(self._chunks)
@@ -259,6 +303,14 @@ class _AsyncReplayStream(AsyncIterator[Any]):
 
     def __aiter__(self) -> _AsyncReplayStream:
         return self
+
+    async def __aenter__(self) -> _AsyncReplayStream:
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc: BaseException | None, traceback: object
+    ) -> None:
+        return None
 
     async def __anext__(self) -> Any:
         try:
@@ -310,11 +362,14 @@ class _ResourceProxy:
     def _wrap_create(self, create: Callable[..., Any] | None, operation: str) -> Callable[..., Any]:
         spec = self._spec
         event_name = spec.event_name(operation)
-        if self._asynchronous:
+        is_async = self._asynchronous or operation in spec.async_operations
+        stream_operation = operation in spec.stream_operations
+
+        if is_async:
 
             async def async_create(*args: Any, **kwargs: Any) -> Any:
                 request = _serialize_request(args, kwargs)
-                if kwargs.get("stream"):
+                if stream_operation or kwargs.get("stream"):
                     started = perf_counter()
                     replayed, recorded = _prepare_stream(
                         self._cassette,
@@ -337,15 +392,9 @@ class _ResourceProxy:
                             self._cassette, spec, operation, request, error, started
                         )
                         raise
-                    try:
-                        return _AsyncRecordingStream(
-                            stream, self._cassette, spec, operation, request, started
-                        )
-                    except (AttributeError, TypeError) as error:
-                        raise spec.streaming_error(
-                            f"{spec.provider} streaming capture requires an async iterable "
-                            "stream; call with stream=False"
-                        ) from error
+                    return _AsyncRecordingStream(
+                        stream, self._cassette, spec, operation, request, started
+                    )
 
                 async def live_call() -> Any:
                     if create is None:
@@ -368,7 +417,7 @@ class _ResourceProxy:
 
         def sync_create(*args: Any, **kwargs: Any) -> Any:
             request = _serialize_request(args, kwargs)
-            if kwargs.get("stream"):
+            if stream_operation or kwargs.get("stream"):
                 started = perf_counter()
                 replayed, recorded = _prepare_stream(
                     self._cassette,

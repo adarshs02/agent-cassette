@@ -27,6 +27,16 @@ and handoffs.
 Python callers can also wrap explicitly with `wrap_openai`, `wrap_anthropic`, or patch
 constructors with `patch_openai` / `patch_anthropic`.
 
+## Mistral
+
+Install `agent-cassette[mistral]` and the Mistral client is patched for each `record`/`replay`
+run. Python callers can also wrap explicitly with `wrap_mistral` or patch the constructor with
+`patch_mistral`.
+
+Supported operations: sync `chat.complete`, async `chat.complete_async`, and streaming
+`chat.stream` / `chat.stream_async`. On replay, these calls return inert, attribute-compatible
+responses from the cassette: no client, no key, no network, no dynamic imports.
+
 ## LangChain
 
 Wrap a Runnable at its execution boundary:
