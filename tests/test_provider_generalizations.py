@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Iterator  # noqa: F401
 
 from agent_cassette import Cassette, EventType  # noqa: F401
 from agent_cassette.integrations._provider import ProviderSpec, wrap_provider
@@ -101,6 +102,6 @@ def test_context_manager_stream_records_and_replays(tmp_path):
 
     with Cassette.replay(path) as cassette:
         client = wrap_provider(None, cassette, STREAM_SPEC)
-        with client.chat.stream(model="m", messages=[]) as events:
+        with client.chat.stream(model="m", messages=[]) as events:  # type: Iterator[_Resp]
             replayed = [e.text for e in events]
     assert replayed == ["A", "B"]
