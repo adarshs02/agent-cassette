@@ -1,7 +1,7 @@
 """Automatic provider recording and replay contexts.
 
 This module deliberately imports the optional provider SDKs (``openai``,
-``anthropic``) only when the matching patch context is entered.
+``anthropic``, ``mistralai``) only when the matching patch context is entered.
 """
 
 from __future__ import annotations

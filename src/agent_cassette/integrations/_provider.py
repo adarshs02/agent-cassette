@@ -157,12 +157,12 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
         request: Any,
         started: float,
     ) -> None:
-        # ``stream`` may be the concrete async iterable/context-manager already
-        # (e.g. mistralai's ``chat.stream_async``, which is a plain function
-        # returning an async CM) or an awaitable that resolves to one (e.g. an
-        # ``AsyncOpenAI``-style coroutine that must be awaited first). Either
-        # way, resolution is deferred to ``_resolve`` since it can only run in
-        # an async context.
+        # ``stream`` is normally the concrete async iterable/context-manager
+        # already, because the async wrapper awaits the underlying coroutine
+        # (e.g. mistralai's ``chat.stream_async`` or an ``AsyncOpenAI``-style
+        # ``create(stream=True)``) before constructing this object. The
+        # ``inspect.isawaitable`` branch in ``_resolve`` remains load-bearing
+        # for any stream that is itself still an awaitable when handed over.
         self._stream = stream
         self._resolved = False
         self._iterator: Any = None
@@ -365,21 +365,11 @@ class _ResourceProxy:
         is_async = self._asynchronous or operation in spec.async_operations
         stream_operation = operation in spec.stream_operations
 
-        if is_async and stream_operation:
-            # Operations declared in both ``async_operations`` and
-            # ``stream_operations`` (e.g. mistralai's ``chat.stream_async``)
-            # are invoked without an ``await`` at the call site — the caller
-            # goes straight to ``async with``/``async for`` on the return
-            # value. So, unlike a plain async operation, this wrapper itself
-            # must be a regular function, not ``async def``; any awaiting of
-            # the underlying call happens lazily inside ``_AsyncRecordingStream``.
-            return self._wrap_async_stream_create(create, operation, event_name)
-
         if is_async:
 
             async def async_create(*args: Any, **kwargs: Any) -> Any:
                 request = _serialize_request(args, kwargs)
-                if kwargs.get("stream"):
+                if stream_operation or kwargs.get("stream"):
                     started = perf_counter()
                     replayed, recorded = _prepare_stream(
                         self._cassette,
@@ -402,15 +392,9 @@ class _ResourceProxy:
                             self._cassette, spec, operation, request, error, started
                         )
                         raise
-                    try:
-                        return _AsyncRecordingStream(
-                            stream, self._cassette, spec, operation, request, started
-                        )
-                    except (AttributeError, TypeError) as error:
-                        raise spec.streaming_error(
-                            f"{spec.provider} streaming capture requires an async iterable "
-                            "stream; call with stream=False"
-                        ) from error
+                    return _AsyncRecordingStream(
+                        stream, self._cassette, spec, operation, request, started
+                    )
 
                 async def live_call() -> Any:
                     if create is None:
@@ -484,46 +468,6 @@ class _ResourceProxy:
             return _restore_response(recorded)
 
         return sync_create
-
-    def _wrap_async_stream_create(
-        self, create: Callable[..., Any] | None, operation: str, event_name: str
-    ) -> Callable[..., Any]:
-        spec = self._spec
-
-        def async_stream_create(*args: Any, **kwargs: Any) -> Any:
-            request = _serialize_request(args, kwargs)
-            started = perf_counter()
-            replayed, recorded = _prepare_stream(
-                self._cassette,
-                EventType.MODEL_CALL,
-                event_name,
-                request,
-                metadata=_metadata(spec, operation, streaming=True),
-            )
-            if replayed:
-                chunks, error = _restore_stream(recorded, spec)
-                return _AsyncReplayStream(chunks, error)
-            if create is None:
-                raise RuntimeError(
-                    f"Replay unexpectedly attempted a live {spec.provider} request"
-                )
-            try:
-                # Not awaited here: some SDKs (e.g. mistralai) return the
-                # async context manager/iterator directly from a plain call,
-                # while others return an awaitable that resolves to one.
-                # ``_AsyncRecordingStream`` resolves either lazily once it is
-                # actually entered/iterated.
-                stream = create(*args, **kwargs)
-            except Exception as error:
-                _record_stream_start_error(
-                    self._cassette, spec, operation, request, error, started
-                )
-                raise
-            return _AsyncRecordingStream(
-                stream, self._cassette, spec, operation, request, started
-            )
-
-        return async_stream_create
 
 
 class ProviderClientProxy:

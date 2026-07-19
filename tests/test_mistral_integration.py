@@ -8,35 +8,68 @@ from agent_cassette.integrations.mistral import MISTRAL_SPEC, wrap_mistral
 
 
 class _Resp:
-    def __init__(self, text): self.text = text
-    def model_dump(self, mode=None): return {"text": self.text}
+    def __init__(self, text):
+        self.text = text
+
+    def model_dump(self, mode=None):
+        return {"text": self.text}
 
 
 class _EventCM:
-    def __init__(self, events): self._events = events
-    def __enter__(self): return iter(self._events)
-    def __exit__(self, *a): return False
+    def __init__(self, events):
+        self._events = events
+
+    def __enter__(self):
+        return iter(self._events)
+
+    def __exit__(self, *a):
+        return False
 
 
-class _AsyncEventCM:
-    def __init__(self, events): self._events = events
+class _AsyncEventStream:
+    """Mirror mistralai's ``EventStreamAsync``: an async iterator that is also
+    usable as an async context manager."""
+
+    def __init__(self, events):
+        self._events = list(events)
+        self._index = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._index >= len(self._events):
+            raise StopAsyncIteration
+        event = self._events[self._index]
+        self._index += 1
+        return event
+
     async def __aenter__(self):
-        async def gen():
-            for e in self._events:
-                yield e
-        return gen()
-    async def __aexit__(self, *a): return False
+        return self
+
+    async def __aexit__(self, *a):
+        return False
 
 
 class _Chat:
-    def complete(self, **kw): return _Resp(kw["messages"][0]["content"].upper())
-    async def complete_async(self, **kw): return _Resp(kw["messages"][0]["content"].upper())
-    def stream(self, **kw): return _EventCM([_Resp("A"), _Resp("B")])
-    def stream_async(self, **kw): return _AsyncEventCM([_Resp("A"), _Resp("B")])
+    def complete(self, **kw):
+        return _Resp(kw["messages"][0]["content"].upper())
+
+    async def complete_async(self, **kw):
+        return _Resp(kw["messages"][0]["content"].upper())
+
+    def stream(self, **kw):
+        return _EventCM([_Resp("A"), _Resp("B")])
+
+    async def stream_async(self, **kw):
+        # Real mistralai ``chat.stream_async`` is ``async def``: callers do
+        # ``response = await client.chat.stream_async(...)`` and then iterate.
+        return _AsyncEventStream([_Resp("A"), _Resp("B")])
 
 
 class _Mistral:
-    def __init__(self, api_key=None): self.chat = _Chat()
+    def __init__(self, api_key=None):
+        self.chat = _Chat()
 
 
 def test_mistral_spec_shape():
@@ -89,7 +122,24 @@ def test_mistral_async_stream(tmp_path):
     path = tmp_path / "m.jsonl"
 
     async def drive(client):
-        async with client.chat.stream_async(model="m", messages=[]) as events:
+        # Real mistralai convention: await the coroutine, then async-iterate.
+        response = await client.chat.stream_async(model="m", messages=[])
+        return [e.text async for e in response]
+
+    with Cassette.record(path) as c:
+        recorded = asyncio.run(drive(wrap_mistral(_Mistral(), c)))
+    with Cassette.replay(path) as c:  # type: ignore[assignment]
+        replayed = asyncio.run(drive(wrap_mistral(None, c)))
+    assert recorded == replayed == ["A", "B"]
+
+
+def test_mistral_async_stream_context_manager(tmp_path):
+    path = tmp_path / "m.jsonl"
+
+    async def drive(client):
+        # ``EventStreamAsync`` is also usable as ``async with``.
+        response = await client.chat.stream_async(model="m", messages=[])
+        async with response as events:
             return [e.text async for e in events]
 
     with Cassette.record(path) as c:
