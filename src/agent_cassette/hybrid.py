@@ -13,6 +13,7 @@ from agent_cassette.events import Event, EventType
 from agent_cassette.matching import DEFAULT_FUZZY_THRESHOLD, InputMatcher, MatchMode
 from agent_cassette.recorder import Recorder
 from agent_cassette.replay import RateLimitError, Replayer, ReplayMismatchError
+from agent_cassette.tools import _ToolSessionMixin
 
 __all__ = [
     "Delay",
@@ -116,7 +117,7 @@ class InjectionRule:
         object.__setattr__(self, "occurrence", occurrence)
 
 
-class Hybrid:
+class Hybrid(_ToolSessionMixin):
     """Replay a source prefix, then permanently record live execution to a new cassette."""
 
     def __init__(

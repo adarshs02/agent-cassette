@@ -5,6 +5,8 @@
 - **Offline replay** for OpenAI (Responses + Chat Completions), Anthropic Messages,
   Mistral Chat Completions, Gemini `generate_content`, and MCP tool calls — sync, async,
   and streaming.
+- **Python tool record/replay** (`wrap_tool`, `cassette.tool`) for any sync or async
+  Python callable, with strict JSON-native input/output validation.
 - **Framework capture** for the OpenAI Agents SDK (agents, LLM boundaries, tools,
   handoffs) and LangChain (Runnable boundaries + nested lifecycle spans).
 - **Time-travel forks** — replay a known prefix, then go live.

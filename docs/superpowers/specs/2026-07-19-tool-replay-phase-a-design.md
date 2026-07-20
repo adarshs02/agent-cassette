@@ -1,6 +1,6 @@
 # Tool record/replay — Phase A design
 
-Status: **ready-for-review** (revision 2, 2026-07-19; approved-pending-review → revision-requested → ready-for-review → revision-requested (security: no duck-typed `model_dump`) → ready-for-review). Scope: **Phase A specification only — no implementation.**
+Status: **implemented-approved** (revision 2, 2026-07-19; approved-pending-review → revision-requested → ready-for-review → revision-requested (security: no duck-typed `model_dump`) → ready-for-review → approved-for-planning → implemented-pending-review → implemented-approved). Scope: **Phase A specification, implemented.** Accepted base: `1.0.1` at `8ff84d9` (tag `v1.0.1`). Accepted Phase A implementation candidate: `f0159cb`, integrated into the `1.1.0` release branch.
 
 Feature goal (all phases): replay a full agent loop without executing real tools.
 Phases: **A** core sync/async tool replay · **B** generator/async-generator streaming ·
@@ -151,7 +151,7 @@ all `BaseException`):**
 | Scenario | Phase A behavior |
 | --- | --- |
 | Cancellation caught inside the session (tool coroutine cancelled, handled before the `with` exits) | `Recorder.acall`'s `except Exception` does not catch it → **no tool event** is recorded for that call. |
-| Cancellation escapes the session `with` block | `Recorder.__exit__` receives the exception and records a terminal `uncaught_exception` `ERROR` event (`call_type=error`, **non-replayable** per `_is_replayable`). This is the existing generic behavior — **not** a tool event and **not** a replayable tool outcome. |
+| Cancellation escapes the session `with` block | `Recorder.__exit__` receives the exception and records a terminal `uncaught_exception` `ERROR` event with **no `_agent_cassette.call_type` metadata at all** (empty `metadata`); it is filtered from replay solely because its event `type` is `ERROR` (per `_is_replayable`). This is the existing generic behavior — **not** a tool event and **not** a replayable tool outcome. |
 | Replay | No live coroutine is awaited; a tool call is never a "cancelled" outcome. |
 
 **Cancellation is not a replayable tool outcome.** This is an **accepted limitation for
@@ -174,9 +174,13 @@ try to serialize an iterator. Tests: **T-GEN-1** (sync generator rejected at wra
 **T-GEN-2** (async generator rejected at wrap time), each asserting the body never ran.
 
 **Concurrency (blocker 6):**
-- **Phase A guarantee: async-task concurrency only.** Concurrent `asyncio` tasks are safe
-  because `Replayer.acall`/`Recorder.acall` contain no `await` suspension between match and
-  return, so the event loop cannot interleave a partial consume.
+- **Phase A guarantee: async-task concurrency only.** `Replayer.acall` never awaits
+  anything (it delegates straight to the synchronous `Replayer.call` match-and-return, so
+  the event loop cannot interleave a partial consume during replay). `Recorder.acall`
+  tasks **may interleave while awaiting live tools** — that suspension is exactly what lets
+  concurrent record-mode tool calls overlap their I/O; what stays safe is persistence:
+  `Recorder.add` is synchronous and guarded by `Recorder`'s `RLock`, so concurrent
+  `Recorder.acall` tasks never interleave mid-write.
 - **Threaded replay is explicitly excluded** — `Replayer` holds no lock. Threaded record is
   serialized by `Recorder`'s `RLock`, but threaded *replay* is unsafe and out of scope
   unless/until `Replayer` locking is added (future work, not Phase A).
@@ -195,13 +199,19 @@ try to serialize an iterator. Tests: **T-GEN-1** (sync generator rejected at wra
 
 ## 6. Serialization rules (strict; binds to 1.0.1 — blockers 1 & 2)
 
-Phase A **does not use `_to_data`, and never calls `model_dump()` or any other value
-method.** All tool input and output validation goes through the existing `1.0.1` strict
-codec — `agent_cassette.json_codec.validate_json_value` / `copy_json_value` (the same
-profile `strict_json_dumps` enforces): only `None`, `str`, `bool`, `int`, finite `float`,
-`list`, and **string-keyed** `dict` are accepted; every other type raises `StrictJSONError`
-identifying the offending **type** (`module.qualname`) — never the value's `repr` — and
-duplicate keys, non-finite numbers, cycles, and depth > 64 are rejected.
+Phase A **does not use `_to_data`, does not use `copy_json_value`, and never calls
+`model_dump()` or any other method on the value.** Tool input and output go through a
+private **exact-type** copier `_copy_tool_json` (in `tools.py`) that reuses the `1.0.1`
+limits (`MAX_JSON_DEPTH`, `StrictJSONError`) but accepts only **plain builtin** JSON types
+by exact `type(value)` identity: `None`, `str`, `bool`, `int`, finite `float`, `list`, and
+`dict` with **plain-`str`** keys. **Subclasses are rejected** — an `IntEnum`, a
+`str`/`float`/`list`/`dict` subclass, or a `str`-subclass mapping key raises
+`StrictJSONError`, so a recorded value and its replay always have the identical Python type
+(no `IntEnum` → `int` drift). (`json_codec.copy_json_value` uses `isinstance` and would
+accept subclasses, causing exactly that drift; Phase A must not use it.) Every other type
+raises `StrictJSONError` naming the offending **type** (`module.qualname`) — never the
+value's `repr` — and duplicate keys, non-finite numbers, cycles, and depth > 64 are
+rejected.
 
 **Security — no duck-typed conversion.** The wrapper must **not** probe for or call
 `model_dump()` (or `dict()`, `__iter__`, etc.) on inputs or outputs. Duck-typing
@@ -212,10 +222,11 @@ converts.
 
 **Input validation (before execution):**
 - Build `input = {"args": [...], "kwargs": {...}}` from the call and run it through
-  `copy_json_value` (validate + detached copy) **before executing `fn`**.
-- Any non-JSON-native input value — a Pydantic model, dataclass, `tuple`/`set`/`bytes`,
-  arbitrary object, non-string mapping key, non-finite number, or cyclic structure —
-  raises `StrictJSONError` **before the tool runs**. The error names the offending type/path
+  `_copy_tool_json` (exact-type validate + detached copy) **before executing `fn`**.
+- Any non-plain-builtin input value — a Pydantic model, dataclass, `tuple`/`set`/`bytes`,
+  **any subclass of a JSON type** (`IntEnum`, `str`/`float`/`list`/`dict` subclass),
+  arbitrary object, non-`str` (or `str`-subclass) mapping key, non-finite number, or cyclic
+  structure — raises `StrictJSONError` **before the tool runs**. The error names the offending type/path
   only; it does not embed the value's `repr`.
 - Rich input support (e.g. passing Pydantic models as tool args) is **out of scope for
   Phase A**; it requires a future *explicit, trusted codec* (opt-in, not duck-typed), the
@@ -231,6 +242,7 @@ outputs:**
 | `list` of supported values | ✅ |
 | `dict` with **string keys** and supported values | ✅ |
 | `tuple`, `set`, `bytes` | ❌ rejected as output |
+| Subclass of a JSON type (`IntEnum`, `str`/`float`/`list`/`dict` subclass) | ❌ rejected (exact-type check) |
 | Pydantic model / dataclass / arbitrary rich object | ❌ rejected as output |
 
 - Unsupported output **fails persistence** (raises before/at write) with a type/path-named

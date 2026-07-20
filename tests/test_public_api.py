@@ -60,6 +60,7 @@ EXPECTED_PUBLIC_API = {
     "wrap_mcp",
     "wrap_mistral",
     "wrap_openai",
+    "wrap_tool",
     "write_viewer",
 }
 

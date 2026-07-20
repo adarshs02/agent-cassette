@@ -6,6 +6,25 @@ All notable changes to Agent Cassette are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-21
+
+Tool record/replay (Phase A): deterministically replay an agent's Python tool calls
+without executing the real tools.
+
+### Added
+- Tool record/replay: `wrap_tool(function, cassette, *, name=None)` and the bound
+  `cassette.tool` decorator (available on `Recorder`, `Replayer`, and `Hybrid`) wrap any
+  sync or async Python callable so each call records, replays, or injects through a
+  single `TOOL_CALL` boundary event; the session type alone decides record vs. replay
+  vs. inject. Inputs are validated before the tool body runs and outputs before any
+  event is persisted, using a private exact-type JSON copier that accepts only plain
+  builtin JSON by type identity — subclasses (`IntEnum`, `str`/`float`/`list`/`dict`
+  subclasses, and non-`str` mapping keys) are rejected, so a recorded value and its
+  replay have identical Python types (no `IntEnum` → `int` drift). No
+  `model_dump()`/`str()`/`repr()` or other duck-typed conversion is ever called; errors
+  name only the value's type. Generators and async generators are rejected at wrap time
+  (streaming tool support is Phase B).
+
 ## [1.0.1] - 2026-07-21
 
 Trust-repair release. Also ships the Mistral and Gemini provider integrations that

@@ -40,6 +40,7 @@ from agent_cassette.redaction import RedactionError
 from agent_cassette.replay import RateLimitError, RecordedCallError, ReplayMismatchError
 from agent_cassette.reports import CIReport
 from agent_cassette.storage import CassetteCorruptionError, RecoveryReport, recover_cassette
+from agent_cassette.tools import wrap_tool
 from agent_cassette.viewer import render_viewer, write_viewer
 
 try:
@@ -117,5 +118,6 @@ __all__ = [
     "wrap_mcp",
     "wrap_mistral",
     "wrap_openai",
+    "wrap_tool",
     "write_viewer",
 ]

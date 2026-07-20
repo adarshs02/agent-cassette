@@ -16,6 +16,7 @@ from agent_cassette.matching import (
     validate_fuzzy_threshold,
 )
 from agent_cassette.storage import load_events
+from agent_cassette.tools import _ToolSessionMixin
 
 
 class ReplayMismatchError(AssertionError):
@@ -43,7 +44,7 @@ class RecordedCallError(RuntimeError):
         super().__init__(f"{recorded_type}: {message}")
 
 
-class Replayer:
+class Replayer(_ToolSessionMixin):
     """Return recorded outputs for incoming calls in event order."""
 
     def __init__(

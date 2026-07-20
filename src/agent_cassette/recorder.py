@@ -14,6 +14,7 @@ from uuid import uuid4
 from agent_cassette.events import Event, EventType
 from agent_cassette.redaction import redact
 from agent_cassette.storage import append_event, save_events
+from agent_cassette.tools import _ToolSessionMixin
 
 Result = TypeVar("Result")
 
@@ -45,7 +46,7 @@ class _SpanContext:
         self.__exit__(exc_type, exc, traceback)
 
 
-class Recorder:
+class Recorder(_ToolSessionMixin):
     """Collect and persist events from one agent execution."""
 
     def __init__(self, path: str | Path, *, redact_secrets: bool = True) -> None:

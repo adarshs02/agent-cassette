@@ -89,6 +89,7 @@ EXPECTED_PUBLIC_SIGNATURES: dict[str, str] = {
     "wrap_mcp": "(session: 'Session | None', cassette: 'Any', *, asynchronous: 'bool | None' = None) -> 'Session'",
     "wrap_mistral": "(client: 'Client | None', cassette: 'Any', *, asynchronous: 'bool | None' = None) -> 'Client'",
     "wrap_openai": "(client: 'Client | None', cassette: 'Any', *, asynchronous: 'bool | None' = None) -> 'Client'",
+    "wrap_tool": "(function: 'Callable[P, R]', cassette: 'Any', *, name: 'str | None' = None) -> 'Callable[P, R]'",
     "write_viewer": "(path: 'str | Path', trajectory: 'Iterable[Event] | str | Path', **options: 'Any') -> 'None'",
     "Cassette.record": "(path: 'str | Path', *, redact_secrets: 'bool' = True) -> 'Recorder'",
     "Cassette.replay": "(path: 'str | Path', *, strict: 'bool' = True, match: 'MatchMode' = 'exact', ignore_paths: 'tuple[str, ...]' = (), matcher: 'InputMatcher | None' = None, fuzzy_threshold: 'float' = 0.9) -> 'Replayer'",

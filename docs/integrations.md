@@ -85,6 +85,55 @@ async with Cassette.replay("mcp.jsonl") as cassette:
     result = await session.call_tool("search", {"query": "agent testing"})
 ```
 
+## Python tools
+
+Wrap a plain Python function (sync or async) at its call boundary:
+
+```python
+from agent_cassette import Cassette, wrap_tool
+
+def search(query: str) -> dict:
+    return live_http_get(query)
+
+with Cassette.record("tools.jsonl") as cassette:
+    recorded_search = wrap_tool(search, cassette)
+    result = recorded_search("agents")          # runs live, records the return value
+
+with Cassette.replay("tools.jsonl") as cassette:
+    replayed_search = wrap_tool(search, cassette)
+    result = replayed_search("agents")          # returns the recorded value; search() never runs
+```
+
+`@cassette.tool` and `@cassette.tool(name="web.search")` are equivalent sugar for
+`wrap_tool` bound to that session. The wrapper must be invoked while the session's `with`
+block is open.
+
+Inputs **and** outputs must be **plain builtin** JSON types only (`None`, `str`, `bool`,
+`int`, finite `float`, `list`, and string-keyed `dict`) — subclasses are rejected. An
+`IntEnum`, a `str`/`float`/`list`/`dict` subclass, or a `str`-subclass mapping key fails
+validation, so a recorded value and its replay always have the identical Python type (no
+`IntEnum` → `int` drift). The wrapper validates and copies these values with exact-type
+checks; it never calls `model_dump()`, `str()`, `repr()`, or any other duck-typed
+conversion. Pydantic models, dataclasses, `tuple`/`set`/`bytes`, and other rich objects are
+rejected as both input and output; passing or returning one fails before the tool's live body runs (for
+inputs) or before the event is persisted (for outputs), with no value representation
+leaked into the error. Rich-object support is deferred to a future explicit, opt-in codec.
+
+Sync and async functions, bound methods, and named `functools.partial`/`lambda` callables
+are supported. Generator and async-generator tools are rejected at wrap time — streaming
+tool support is Phase B.
+
+Matching is by exact call shape: `wrapped(1)` and `wrapped(value=1)` record different
+inputs (`{"args": [1], "kwargs": {}}` vs `{"args": [], "kwargs": {"value": 1}}`) and do not
+match each other on replay. Call the wrapped tool the same way every time.
+
+For concurrent async tools with distinct inputs, replay with `strict=False` so calls match
+by first-unconsumed input rather than strict arrival order; assert
+`replayer.remaining == 0` yourself afterward, since a non-strict `Replayer.__exit__` does
+not enforce full consumption. Identical concurrent inputs with different recorded outputs
+are an accepted ambiguity — `wrap_tool` cannot know which concurrent task should receive
+which recorded output.
+
 ## Manual API
 
 Framework-independent, for any model or tool call:
