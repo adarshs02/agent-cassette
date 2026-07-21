@@ -1,11 +1,12 @@
 # Tool record/replay — Phase A design
 
-Status: **implemented-approved** (revision 2, 2026-07-19; approved-pending-review → revision-requested → ready-for-review → revision-requested (security: no duck-typed `model_dump`) → ready-for-review → approved-for-planning → implemented-pending-review → implemented-approved). Scope: **Phase A specification, implemented.** Accepted base: `1.0.1` at `8ff84d9` (tag `v1.0.1`). Accepted Phase A implementation candidate: `f0159cb`, integrated into the `1.1.0` release branch.
+Status: **implemented-approved** (revision 2, 2026-07-19; approved-pending-review → revision-requested → ready-for-review → revision-requested (security: no duck-typed `model_dump`) → ready-for-review → approved-for-planning → implemented-pending-review → implemented-approved). Scope: **Phase A specification, implemented.** Accepted base: `1.0.1` at `8ff84d9` (tag `v1.0.1`). Accepted Phase A implementation candidate: `f0159cb`, integrated into the `1.1.0` release branch as `48847b7`.
 
 Feature goal (all phases): replay a full agent loop without executing real tools.
 Phases: **A** core sync/async tool replay · **B** generator/async-generator streaming ·
 **C1** OpenAI Agents bridge · **C2** LangChain bridge · **D** public assertions and
-verification UX. `1.1.0` closes only after A, B, C1, C2, and D pass acceptance.
+verification UX. `1.1.0` ships Phase A only; B, C1, C2, and D remain follow-on phases,
+and the full-agent-loop goal is incomplete until all of them pass acceptance.
 **Zero-live-execution sentinel tests belong in every phase** (safety proof cannot wait
 for D).
 
@@ -17,7 +18,7 @@ not ship on top of the pre-1.0.1 `_to_data` behavior.
 
 | Blocker | Resolved in |
 | --- | --- |
-| 1. Safe serialization (no `_to_data`) | §6 — strict `validate_json_value`/`copy_json_value`; JSON-native input **and** output; **no `model_dump`/duck-typing** (no user code in the codec path); tests T-SER-1/2 |
+| 1. Safe serialization (no `_to_data`) | §6 — private exact-type `_copy_tool_json`; JSON-native input **and** output validated by exact `type(value)` identity (`copy_json_value` is **not** used — its `isinstance` checks accept subclasses, causing `IntEnum` → `int` drift); **no `model_dump`/duck-typing** (no user code in the codec path); tests T-SER-1/2 |
 | 2. Output type contract | §6 "Output type contract" (JSON-native only); tests T-OUT-1/2 |
 | 3. Generator rejection | §5 "Generators and async generators"; tests T-GEN-1/2 |
 | 4. Cancellation semantics | §4 cancellation matrix; tests T-CANCEL-1/2 |

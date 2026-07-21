@@ -1,7 +1,8 @@
 # Public API inventory
 
 The names exported by `agent_cassette.__all__` are the stable public Python API for
-the 1.0.x release series. No name is removed without a documented deprecation period.
+the 1.x release series. Additive names may arrive in minor releases, but no name is
+removed and no signature is broken without a documented deprecation period.
 
 | Area | Public names |
 | --- | --- |
@@ -18,7 +19,7 @@ The package also exposes `agent_cassette.__version__`, the installed distributio
 version.
 
 Submodules, underscored names, dataclass field layouts, report JSON not explicitly
-documented as versioned, and test helpers are internal. The 1.0.x contract freezes
+documented as versioned, and test helpers are internal. The 1.x contract freezes
 signatures, the adapter protocol, CLI tree, report envelopes, and schema guarantees
 with snapshot tests.
 

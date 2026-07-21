@@ -30,7 +30,7 @@ directory-relative operations and fail-closed rollback rules on supported POSIX
 filesystems; portable runtime config reads do not weaken mutation rules.
 
 Concurrent threads and async tasks are covered by their documented recorder and
-adapter synchronization. Cross-process writers are not coordinated in 1.0.x; do not
-have multiple processes append to the same cassette. This is a documented current
-limitation, not a defect.
+adapter synchronization. Cross-process writers are not coordinated in the current
+implementation; do not have multiple processes append to the same cassette. This is a
+documented current limitation, not a defect.
 
