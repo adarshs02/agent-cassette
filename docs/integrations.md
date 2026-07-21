@@ -120,8 +120,20 @@ inputs) or before the event is persisted (for outputs), with no value representa
 leaked into the error. Rich-object support is deferred to a future explicit, opt-in codec.
 
 Sync and async functions, bound methods, and named `functools.partial`/`lambda` callables
-are supported. Generator and async-generator tools are rejected at wrap time — streaming
-tool support is Phase B.
+are supported. Generator and async-generator tools are also supported: `wrap_tool` returns
+a streaming proxy that records and replays each yielded item, the terminal return value
+(sync only), a terminal error, or a deliberate early `close()`/`aclose()`. Every yielded
+item is exact-type validated and detached before it reaches the caller, so a recorded item
+and its replay have identical Python types. Replay never constructs or runs the underlying
+generator.
+
+Streaming limits (Phase B): a stream must be fully exhausted **or** explicitly
+closed for the cassette to record it — a stream that is abandoned part-way records nothing
+(no `__del__`/GC persistence). The proxy implements the iterator protocol plus
+`close()`/`aclose()`; `send(None)`/`asend(None)` behave as `next()`/`anext()`, while a
+non-`None` `send`/`asend` and any `throw`/`athrow` raise `NotImplementedError` (bidirectional
+streaming is a later phase). An async stream cancelled mid-iteration records its partial
+prefix plus a terminal cancellation and replays a fresh `CancelledError` after the prefix.
 
 Matching is by exact call shape: `wrapped(1)` and `wrapped(value=1)` record different
 inputs (`{"args": [1], "kwargs": {}}` vs `{"args": [], "kwargs": {"value": 1}}`) and do not

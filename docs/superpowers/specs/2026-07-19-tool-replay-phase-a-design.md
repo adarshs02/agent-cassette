@@ -5,8 +5,10 @@ Status: **implemented-approved** (revision 2, 2026-07-19; approved-pending-revie
 Feature goal (all phases): replay a full agent loop without executing real tools.
 Phases: **A** core sync/async tool replay · **B** generator/async-generator streaming ·
 **C1** OpenAI Agents bridge · **C2** LangChain bridge · **D** public assertions and
-verification UX. `1.1.0` ships Phase A only; B, C1, C2, and D remain follow-on phases,
-and the full-agent-loop goal is incomplete until all of them pass acceptance.
+verification UX. `1.1.0` is held **unpublished** until A, B, C1, C2, and D all pass
+acceptance; it then ships the complete tool-replay feature as one release. The
+full-agent-loop goal is incomplete until every phase passes. (The published `1.0.1`
+release contains none of these phases — it is the trust-repair release.)
 **Zero-live-execution sentinel tests belong in every phase** (safety proof cannot wait
 for D).
 

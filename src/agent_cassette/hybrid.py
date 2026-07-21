@@ -227,8 +227,16 @@ class Hybrid(_ToolSessionMixin):
         metadata: dict[str, Any] | None = None,
         serializer: Callable[[Any], Any] | None = None,
         error_serializer: Callable[[Exception], Any] | None = None,
+        defer_errors: bool = False,
     ) -> tuple[bool, Any]:
-        """Replay or inject a stream payload, or signal that a live stream is required."""
+        """Replay or inject a stream payload, or signal that a live stream is required.
+
+        When ``defer_errors`` is true, an injected ``Raise`` is recorded and its
+        serialized payload returned as a replayable result (so the caller raises
+        it on first iteration) instead of being raised here at preparation time.
+        Existing (provider/LangChain) callers pass ``defer_errors=False`` and keep
+        the raise-at-preparation behavior.
+        """
         normalized_type = self._event_type(event_type)
         injection = self._select_injection(normalized_type, name)
         if injection is not None:
@@ -272,6 +280,8 @@ class Hybrid(_ToolSessionMixin):
                     metadata=error_metadata,
                     duration_ms=0.0,
                 )
+                if defer_errors:
+                    return True, serialized_error
                 raise error
             self.recorder.call(
                 normalized_type,

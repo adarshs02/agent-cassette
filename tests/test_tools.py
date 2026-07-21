@@ -447,36 +447,42 @@ def test_wrapper_preserves_signature_and_metadata():
 
 
 # --------------------------------------------------------------------------- #
-# Generator rejection
+# Generator dispatch (Phase B: streaming, no longer rejected)
 # --------------------------------------------------------------------------- #
 
 
-def test_generator_tool_rejected_before_execution():
-    entered = False
+def test_generator_tool_is_dispatched_to_streaming(tmp_path):
+    path = tmp_path / "cassette.jsonl"
 
     def stream(query):
-        nonlocal entered
-        entered = True
         yield query
+        yield query.upper()
 
-    with pytest.raises(ValueError, match="generator"):
-        wrap_tool(stream, object())
+    with Cassette.record(path) as cassette:
+        assert list(wrap_tool(stream, cassette)("hi")) == ["hi", "HI"]
 
-    assert entered is False
+    def forbidden(query):
+        raise AssertionError("live generator constructed during replay")
+        yield  # pragma: no cover -- marks forbidden as a generator function
+
+    with Cassette.replay(path) as replayer:
+        assert list(wrap_tool(forbidden, replayer, name="stream")("hi")) == ["hi", "HI"]
 
 
-def test_async_generator_tool_rejected_before_execution():
-    entered = False
+def test_async_generator_tool_is_dispatched_to_streaming(tmp_path):
+    path = tmp_path / "cassette.jsonl"
 
     async def astream(query):
-        nonlocal entered
-        entered = True
         yield query
+        yield query.upper()
 
-    with pytest.raises(ValueError, match="generator"):
-        wrap_tool(astream, object())
+    async def scenario():
+        async with Cassette.record(path) as cassette:
+            assert [item async for item in wrap_tool(astream, cassette)("hi")] == ["hi", "HI"]
+        async with Cassette.replay(path) as replayer:
+            return [item async for item in wrap_tool(astream, replayer)("hi")]
 
-    assert entered is False
+    assert asyncio.run(scenario()) == ["hi", "HI"]
 
 
 # --------------------------------------------------------------------------- #

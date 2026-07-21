@@ -6,24 +6,35 @@ All notable changes to Agent Cassette are documented here. The format follows
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-07-21
+## [1.1.0] - Unreleased
 
-Tool record/replay (Phase A): deterministically replay an agent's Python tool calls
-without executing the real tools.
+Tool record/replay: deterministically replay an agent's Python tool calls — scalar and
+streaming — without executing the real tools. Held unpublished until all tool-replay
+phases (A core replay, B streaming, C1/C2 framework bridges, D verification UX) pass
+acceptance, then shipped as one release.
 
 ### Added
-- Tool record/replay: `wrap_tool(function, cassette, *, name=None)` and the bound
-  `cassette.tool` decorator (available on `Recorder`, `Replayer`, and `Hybrid`) wrap any
-  sync or async Python callable so each call records, replays, or injects through a
-  single `TOOL_CALL` boundary event; the session type alone decides record vs. replay
-  vs. inject. Inputs are validated before the tool body runs and outputs before any
-  event is persisted, using a private exact-type JSON copier that accepts only plain
+- Tool record/replay (Phase A): `wrap_tool(function, cassette, *, name=None)` and the
+  bound `cassette.tool` decorator (available on `Recorder`, `Replayer`, and `Hybrid`)
+  wrap any sync or async Python callable so each call records, replays, or injects
+  through a single `TOOL_CALL` boundary event; the session type alone decides record vs.
+  replay vs. inject. Inputs are validated before the tool body runs and outputs before
+  any event is persisted, using a private exact-type JSON copier that accepts only plain
   builtin JSON by type identity — subclasses (`IntEnum`, `str`/`float`/`list`/`dict`
   subclasses, and non-`str` mapping keys) are rejected, so a recorded value and its
   replay have identical Python types (no `IntEnum` → `int` drift). No
   `model_dump()`/`str()`/`repr()` or other duck-typed conversion is ever called; errors
-  name only the value's type. Generators and async generators are rejected at wrap time
-  (streaming tool support is Phase B).
+  name only the value's type.
+- Tool stream record/replay (Phase B): `wrap_tool` also wraps generator and
+  async-generator tools, returning a streaming proxy that records and replays each
+  yielded item, the terminal return value (sync), a terminal error, async cancellation,
+  or a deliberate early `close()`/`aclose()` through one versioned tool-stream envelope
+  (reusing `TOOL_CALL`/`ERROR`; no new public export, `EventType`, or schema version).
+  Yielded items are exact-type validated and detached at yield time; replay never
+  constructs or runs the underlying generator. A stream must be exhausted or explicitly
+  closed to record (abandoned streams persist nothing); `send(None)`/`asend(None)` act as
+  `next()`/`anext()` while non-`None` `send`/`asend` and `throw`/`athrow` raise
+  `NotImplementedError`.
 
 ## [1.0.1] - 2026-07-21
 
