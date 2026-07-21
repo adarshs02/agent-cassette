@@ -6,7 +6,10 @@ resolves a class, registers a migration, or executes code named by cassette data
 
 The v1 parser rejects duplicate keys, non-finite numbers, invalid fields, cycles,
 and excessive nesting. Writes serialize completely before modifying a destination;
-atomic replacement is used for full saves and recovery. Unsupported Python objects
+atomic replacement is used for full saves and recovery. Recorded values must be
+JSON-native or come from a trusted integration SDK root (the provider's own package,
+e.g. `openai` or `mcp`), which is dumped through its `model_dump`; the `model_dump` of
+a value defined outside those roots is never read or called. Unsupported Python objects
 are rejected instead of invoking their `str` or `repr` methods.
 
 Redaction runs before persistence when enabled. It recursively covers common
@@ -27,7 +30,7 @@ directory-relative operations and fail-closed rollback rules on supported POSIX
 filesystems; portable runtime config reads do not weaken mutation rules.
 
 Concurrent threads and async tasks are covered by their documented recorder and
-adapter synchronization. Cross-process writers are not coordinated in 0.15; do not
-have multiple processes append to the same cassette. This limitation must be
-implemented or remain explicit before the stable release.
+adapter synchronization. Cross-process writers are not coordinated in 1.0.x; do not
+have multiple processes append to the same cassette. This is a documented current
+limitation, not a defect.
 

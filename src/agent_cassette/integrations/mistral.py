@@ -23,6 +23,7 @@ MISTRAL_SPEC = ProviderSpec(
         {"chat.complete", "chat.complete_async", "chat.stream", "chat.stream_async"}
     ),
     prefixes=frozenset({"chat"}),
+    trusted_roots=("mistralai",),
     stream_operations=frozenset({"chat.stream", "chat.stream_async"}),
     async_operations=frozenset({"chat.complete_async", "chat.stream_async"}),
     async_probe_path=(),

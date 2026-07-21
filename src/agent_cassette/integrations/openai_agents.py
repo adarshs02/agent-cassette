@@ -10,6 +10,13 @@ from functools import wraps
 from typing import Any
 
 from agent_cassette.events import EventType
+from agent_cassette.integrations._serialization import serialize_sdk_value
+
+_TRUSTED_ROOTS = ("agents", "openai")
+
+
+def _to_data(value: Any) -> Any:
+    return serialize_sdk_value(value, trusted_roots=_TRUSTED_ROOTS)
 
 
 class OpenAIAgentsUnavailableError(ImportError):
@@ -30,7 +37,7 @@ class AgentCassetteRunHooks:
             EventType.CUSTOM,
             "agent.end",
             input={"agent": _name(agent)},
-            output=_to_data(output),
+            output=output,
         )
 
     async def on_handoff(self, context: Any, from_agent: Any, to_agent: Any) -> None:
@@ -46,7 +53,7 @@ class AgentCassetteRunHooks:
             _name(tool),
             input={
                 "agent": _name(agent),
-                "arguments": _to_data(getattr(context, "tool_arguments", None)),
+                "arguments": getattr(context, "tool_arguments", None),
                 "tool_call_id": getattr(context, "tool_call_id", None),
             },
         )
@@ -56,7 +63,7 @@ class AgentCassetteRunHooks:
             EventType.TOOL_RESULT,
             _name(tool),
             input={"agent": _name(agent), "tool_call_id": getattr(context, "tool_call_id", None)},
-            output=_to_data(result),
+            output=result,
         )
 
     async def on_llm_start(
@@ -68,7 +75,7 @@ class AgentCassetteRunHooks:
             input={
                 "agent": _name(agent),
                 "system_prompt": system_prompt,
-                "items": _to_data(input_items),
+                "items": input_items,
             },
         )
 
@@ -77,7 +84,7 @@ class AgentCassetteRunHooks:
             EventType.CUSTOM,
             "agent.llm.end",
             input={"agent": _name(agent)},
-            output=_to_data(response),
+            output=response,
         )
 
     def _add(self, event_type: EventType, name: str, **values: Any) -> None:
@@ -85,10 +92,14 @@ class AgentCassetteRunHooks:
         metadata.update({"provider": "openai-agents", "lifecycle": True})
         input_value = values.pop("input", None)
         output_value = values.pop("output", None)
+        # Serialize (and validate) the COMPLETE input payload once here, and the
+        # output once via the serializer, so SDK values are dumped exactly once
+        # (no double-dump) and an invalid payload fails before it is persisted.
+        serialized_input = _to_data(input_value) if input_value is not None else None
         self.cassette.call(
             event_type,
             name,
-            input_value,
+            serialized_input,
             lambda: output_value,
             metadata=metadata,
             serializer=_to_data,
@@ -164,22 +175,6 @@ def _merge_hooks(existing: Any, cassette: Any) -> Any:
 
 def _name(value: Any) -> str:
     return str(getattr(value, "name", type(value).__name__))
-
-
-def _to_data(value: Any) -> Any:
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        try:
-            return dump(mode="json")
-        except TypeError:
-            return dump()
-    if isinstance(value, dict):
-        return {str(key): _to_data(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_to_data(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
 
 
 __all__ = [

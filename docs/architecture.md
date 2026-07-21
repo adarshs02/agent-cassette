@@ -2,8 +2,9 @@
 
 ## What it can do
 
-- **Offline replay** for OpenAI (Responses + Chat Completions), Anthropic Messages, and
-  MCP tool calls — sync, async, and streaming.
+- **Offline replay** for OpenAI (Responses + Chat Completions), Anthropic Messages,
+  Mistral Chat Completions, Gemini `generate_content`, and MCP tool calls — sync, async,
+  and streaming.
 - **Framework capture** for the OpenAI Agents SDK (agents, LLM boundaries, tools,
   handoffs) and LangChain (Runnable boundaries + nested lifecycle spans).
 - **Time-travel forks** — replay a known prefix, then go live.

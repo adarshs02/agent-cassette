@@ -22,6 +22,11 @@ class _Resp:
         return self._value.upper()
 
 
+# Pin the fake under the real ``google.genai`` root so it serializes via the
+# trusted SDK path.
+_Resp.__module__ = "google.genai"
+
+
 class _AsyncEventStream:
     def __init__(self, values):
         self._values = values

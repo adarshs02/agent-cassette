@@ -14,6 +14,11 @@ class _Result:
         return {"content": self.content}
 
 
+# Pin the fake under the real ``mcp`` root so it serializes via the trusted
+# SDK path.
+_Result.__module__ = "mcp"
+
+
 class _AsyncSession:
     def __init__(self) -> None:
         self.calls = 0

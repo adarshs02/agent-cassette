@@ -28,6 +28,7 @@ GEMINI_SPEC = ProviderSpec(
         }
     ),
     prefixes=frozenset({"models", "aio", "aio.models"}),
+    trusted_roots=("google.genai",),
     stream_operations=frozenset(
         {"models.generate_content_stream", "aio.models.generate_content_stream"}
     ),

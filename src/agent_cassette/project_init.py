@@ -22,7 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10
 CONFIG_NAME = ".agent-cassette.toml"
 CONFIG_SCHEMA_VERSION = 1
 REPORT_SCHEMA_VERSION = 1
-SUPPORTED_PROVIDERS = ("anthropic", "mcp", "openai", "openai-agents")
+SUPPORTED_PROVIDERS = ("anthropic", "gemini", "mcp", "mistral", "openai", "openai-agents")
 SUPPORTED_FRAMEWORKS = ("langchain",)
 SUPPORTED_TEST_FRAMEWORKS = ("pytest", "unittest")
 _MATCH_MODES = ("exact", "fuzzy", "normalized", "subset")
@@ -372,6 +372,10 @@ def _detect_integrations_with_warnings(
             providers.add("mcp")
         elif normalized == "openai-agents":
             providers.add("openai-agents")
+        elif normalized == "mistralai":
+            providers.add("mistral")
+        elif normalized == "google-genai":
+            providers.add("gemini")
         if normalized == "langchain" or normalized.startswith("langchain-"):
             frameworks.add("langchain")
         if normalized == "pytest" or normalized.startswith("pytest-"):

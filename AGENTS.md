@@ -68,7 +68,7 @@ commands above.
    planned files. This executes no project code and touches no dependencies.
 2. **Confirm with the user.** Ask one short multiple-choice round, prefilled from
    detection:
-   - **Providers** to capture — `openai`, `anthropic`.
+   - **Providers** to capture — `openai`, `anthropic`, `mistral`, `gemini`.
    - **Frameworks** — `openai-agents`, `langchain`, `mcp`.
    - **Test framework** — `pytest` (or `unittest`).
    - **Match strictness** — `exact` (default), `subset`, `normalized`, `fuzzy`.

@@ -21,6 +21,11 @@ class FakeResponse:
         return {"id": self.id, "output_text": self.output_text}
 
 
+# The serializer trusts SDK response types by their defining module; pin this
+# fake under the real ``openai`` root so it serializes via the trusted path.
+FakeResponse.__module__ = "openai"
+
+
 class FakeResponses:
     def __init__(self):
         self.calls = 0

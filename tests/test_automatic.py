@@ -24,6 +24,11 @@ class FakeResponse:
         return {"id": self.id, "output_text": self.output_text}
 
 
+# Pin the fake under the real ``openai`` root so it serializes via the trusted
+# SDK path.
+FakeResponse.__module__ = "openai"
+
+
 class FakeResponses:
     live_calls = 0
 

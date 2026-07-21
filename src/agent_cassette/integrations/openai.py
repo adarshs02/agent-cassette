@@ -21,6 +21,7 @@ OPENAI_SPEC = ProviderSpec(
     provider="openai",
     operations=frozenset({"responses.create", "chat.completions.create"}),
     prefixes=frozenset({"responses", "chat", "chat.completions"}),
+    trusted_roots=("openai",),
     async_probe_path=("responses", "create"),
     streaming_error=OpenAIStreamingUnsupportedError,
     raw_response_error=OpenAIRawResponseUnsupportedError,

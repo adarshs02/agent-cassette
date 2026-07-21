@@ -16,6 +16,11 @@ class _Response:
         return {"output_text": self.output_text}
 
 
+# Pin the fake under the real ``openai`` root so it serializes via the trusted
+# SDK path.
+_Response.__module__ = "openai"
+
+
 class _Responses:
     live_calls = 0
 

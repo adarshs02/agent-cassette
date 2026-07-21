@@ -17,6 +17,11 @@ class FakeChunk:
         return {"sequence": self.sequence, "text": self.text}
 
 
+# Pin the fake chunk under the real ``openai`` root so it serializes via the
+# trusted SDK path.
+FakeChunk.__module__ = "openai"
+
+
 class SyncStream:
     def __init__(self, chunks: list[FakeChunk]) -> None:
         self._chunks = iter(chunks)

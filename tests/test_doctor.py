@@ -39,7 +39,15 @@ def test_collect_diagnostics_has_stable_schema_and_does_not_import_optional_pack
             "openai-agents": "0.4.0",
         },
     )
-    optional_modules = {"agents", "anthropic", "langchain_core", "mcp", "openai"}
+    optional_modules = {
+        "agents",
+        "anthropic",
+        "google",
+        "langchain_core",
+        "mcp",
+        "mistralai",
+        "openai",
+    }
     real_import = builtins.__import__
 
     def guarded_import(name, *args, **kwargs):
@@ -61,15 +69,17 @@ def test_collect_diagnostics_has_stable_schema_and_does_not_import_optional_pack
     }
     assert [item["name"] for item in report["integrations"]] == [
         "Anthropic",
+        "Gemini",
         "LangChain",
         "MCP",
+        "Mistral",
         "OpenAI",
         "OpenAI Agents",
     ]
     assert all(
         {"supported", "distribution", "installed"} <= item.keys() for item in report["integrations"]
     )
-    assert report["integrations"][2] == {
+    assert report["integrations"][3] == {
         "available": True,
         "distribution": "mcp",
         "installed": True,
@@ -80,8 +90,17 @@ def test_collect_diagnostics_has_stable_schema_and_does_not_import_optional_pack
         "version": "1.9.0",
     }
     assert report["integrations"][0]["available"] is False
-    assert report["integrations"][3]["version"] == "1.2.3"
-    assert probes == ["agent_cassette", "anthropic", "langchain_core", "mcp", "openai", "agents"]
+    assert report["integrations"][5]["version"] == "1.2.3"
+    assert probes == [
+        "agent_cassette",
+        "anthropic",
+        "google.genai",
+        "langchain_core",
+        "mcp",
+        "mistralai",
+        "openai",
+        "agents",
+    ]
 
 
 def test_missing_optional_packages_do_not_make_doctor_unhealthy(monkeypatch, capsys):

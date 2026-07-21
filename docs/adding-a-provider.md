@@ -229,13 +229,17 @@ EXPECTED_PUBLIC_API = {
 }
 ```
 
-Also update the blocked optional dependencies if needed. For Mistral, `"mistralai"` was added to the blocked set:
+Also update the blocked optional dependencies if needed. For Mistral, `"mistralai"` was
+added to the blocked set; for Gemini, `"google"` was added (the `google-genai` package
+imports as `google.genai`):
 
 ```python
-blocked = {"agents", "anthropic", "langchain_core", "mistralai", "openai"}
+blocked = {"agents", "anthropic", "google", "langchain_core", "mistralai", "openai"}
 ```
 
-**Mistral example**: Both functions added to `EXPECTED_PUBLIC_API`, and `"mistralai"` added to the blocked imports.
+**Mistral example**: Both functions added to `EXPECTED_PUBLIC_API`, and `"mistralai"` added
+to the blocked imports. **Gemini example**: same, with `"google"` added to the blocked
+imports.
 
 ### 4d. `tests/test_contract_snapshots.py`
 

@@ -1,6 +1,6 @@
 # Cassette schema and recovery
 
-Cassette schema v1 is UTF-8 JSON Lines. Blank lines are ignored for beta
+Cassette schema v1 is UTF-8 JSON Lines. Blank lines are ignored for forward
 compatibility. Each nonblank line is one object with exactly these fields:
 
 `schema_version`, `id`, `timestamp`, `type`, `name`, `input`, `output`, `metadata`,

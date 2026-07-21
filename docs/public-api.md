@@ -1,10 +1,9 @@
 # Public API inventory
 
-The names exported by `agent_cassette.__all__` are the candidate stable Python API
-for the 1.0 release candidate. They remain beta in 0.15, but no candidate is removed
-without a documented deprecation period.
+The names exported by `agent_cassette.__all__` are the stable public Python API for
+the 1.0.x release series. No name is removed without a documented deprecation period.
 
-| Area | Candidate public names |
+| Area | Public names |
 | --- | --- |
 | Sessions | `Cassette`, `Hybrid`, `InjectionRule`, `Return`, `Raise`, `Delay` |
 | Events and replay | `Event`, `EventType`, `ReplayMismatchError`, `RecordedCallError`, `RateLimitError` |
@@ -19,9 +18,9 @@ The package also exposes `agent_cassette.__version__`, the installed distributio
 version.
 
 Submodules, underscored names, dataclass field layouts, report JSON not explicitly
-documented as versioned, and test helpers are internal. The RC freezes signatures,
-the adapter protocol, CLI tree, report envelopes, and schema guarantees with
-snapshot tests.
+documented as versioned, and test helpers are internal. The 1.0.x contract freezes
+signatures, the adapter protocol, CLI tree, report envelopes, and schema guarantees
+with snapshot tests.
 
 `register_migration` executes caller-provided trusted Python and is not a cassette
 plugin mechanism. Optional integration imports stay lazy so importing the core API

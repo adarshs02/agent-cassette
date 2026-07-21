@@ -20,7 +20,6 @@ and framework replay tests remove credentials and do not require a network call.
 
 Versions outside these ranges may work, but are not part of the compatibility
 contract. Upper bounds prevent a new major SDK release from silently entering a
-previously validated environment. The release candidate may narrow a range if a
-boundary cannot pass the full conformance gate; it must not broaden one without a
-new boundary test.
+previously validated environment. A release may narrow a range if a boundary cannot
+pass the full conformance gate; it must not broaden one without a new boundary test.
 

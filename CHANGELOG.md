@@ -6,6 +6,11 @@ All notable changes to Agent Cassette are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-21
+
+Trust-repair release. Also ships the Mistral and Gemini provider integrations that
+landed after 1.0.0.
+
 ### Added
 - Mistral provider support (`wrap_mistral`, `patch_mistral`, `agent-cassette[mistral]`):
   sync `chat.complete`, async `chat.complete_async`, and streaming `chat.stream` /
@@ -17,6 +22,23 @@ All notable changes to Agent Cassette are documented here. The format follows
   context-manager-tolerant record/replay streams.
 - Provider foundation: `response_attributes` capture for computed response
   properties.
+- `agent-cassette init --detect` recognizes Mistral (`mistralai`) and Gemini
+  (`google-genai`) as providers.
+
+### Changed
+- Trust repair: the shared provider, MCP, and OpenAI Agents serialization no longer
+  falls back to `str(value)` or coerces non-string mapping keys. Recorded values must
+  be JSON-native, or come from a trusted integration SDK root (the provider's own
+  package, e.g. `openai` or `mcp`) that is dumped through its `model_dump`; the
+  `model_dump` of a value defined outside the trusted roots is never read or called.
+  Unsupported values and non-string keys are rejected before persistence with a
+  type-name-only error (never the value's `repr`). Values previously persisted via lossy
+  stringification now raise `StrictJSONError` — a correction of behavior that violated
+  the stable security contract.
+
+### Security
+- Hostile `__str__`/`__repr__` methods on recorded values are never invoked during
+  serialization (enforced by adversarial tests).
 
 ## [1.0.0] - 2026-07-18
 

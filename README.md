@@ -13,7 +13,7 @@ pip install agent-cassette
 The core is pure Python standard library. Add only the integrations you use:
 
 ```bash
-pip install "agent-cassette[openai]"      # or [anthropic], [agents], [langchain]
+pip install "agent-cassette[openai]"      # or [anthropic], [agents], [langchain], [mistral], [gemini]
 ```
 
 ## Setup
@@ -46,7 +46,7 @@ Your code needs no changes — supported clients (OpenAI, Anthropic) are patched
 
 | Guide | What's in it |
 |---|---|
-| [Integrations](docs/integrations.md) | OpenAI, Anthropic, OpenAI Agents, LangChain, MCP, manual API |
+| [Integrations](docs/integrations.md) | OpenAI, Anthropic, OpenAI Agents, Mistral, Gemini, LangChain, MCP, manual API |
 | [Testing](docs/testing.md) | Pytest fixture, trajectory assertions, CI reports, GitHub Action |
 | [Forks & failure injection](docs/forks.md) | Time-travel forks, deterministic failures, request matching |
 | [CLI reference](docs/cli.md) | Every `agent-cassette` command |
@@ -54,7 +54,7 @@ Your code needs no changes — supported clients (OpenAI, Anthropic) are patched
 | [Compatibility](docs/compatibility.md) | Supported provider and framework versions |
 | [Cassette schema](docs/cassette-schema.md) | JSONL event contract (v1) |
 | [CLI exit codes](docs/cli-exit-codes.md) | Exit-code contract for CI |
-| [Beta & upgrades](docs/beta-upgrade.md) | Beta status and migrations |
+| [Upgrades & migrations](docs/beta-upgrade.md) | Version history and cassette migrations |
 | [Security model](docs/security.md) | Redaction, replay safety, current limits |
 | [Public API](docs/public-api.md) | Exported surface |
 | [Adding a provider](docs/adding-a-provider.md) | Extend record/replay to a new SDK |

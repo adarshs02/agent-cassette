@@ -32,6 +32,11 @@ class _Resp:
         return {"text": self.text}
 
 
+# Pin this fake under the trusted root the demo specs declare below so it
+# serializes via the trusted SDK path.
+_Resp.__module__ = "demo"
+
+
 class _Chat:
     def go(self, **kw):
         return _Resp("SYNC")
@@ -49,6 +54,7 @@ SPEC = ProviderSpec(
     provider="demo",
     operations=frozenset({"chat.go", "chat.go_async"}),
     prefixes=frozenset({"chat"}),
+    trusted_roots=("demo",),
     async_operations=frozenset({"chat.go_async"}),
 )
 
@@ -95,6 +101,7 @@ STREAM_SPEC = ProviderSpec(
     provider="demo",
     operations=frozenset({"chat.stream"}),
     prefixes=frozenset({"chat"}),
+    trusted_roots=("demo",),
     stream_operations=frozenset({"chat.stream"}),
 )
 
@@ -129,6 +136,8 @@ def test_response_attributes_are_captured_and_replayed(tmp_path):
         def text(self):
             return self._value.upper()
 
+    _Resp.__module__ = "demo"
+
     class _Models:
         def generate(self, **kw):
             return _Resp(kw["contents"])
@@ -141,6 +150,7 @@ def test_response_attributes_are_captured_and_replayed(tmp_path):
         provider="demo",
         operations=frozenset({"models.generate"}),
         prefixes=frozenset({"models"}),
+        trusted_roots=("demo",),
         response_attributes=frozenset({"text"}),
     )
     path = tmp_path / "demo.jsonl"
