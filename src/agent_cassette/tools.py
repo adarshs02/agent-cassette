@@ -36,7 +36,7 @@ def _root_callable(function: Callable[..., Any]) -> Callable[..., Any]:
 
     if not (inspect.isfunction(root) or inspect.ismethod(root)):
         raise ValueError(
-            "callable objects and builtin callables are not supported in Phase A; "
+            "callable objects and builtin callables are not supported for tool replay; "
             "wrap a Python function or bound method"
         )
     return root
@@ -214,40 +214,61 @@ def _restore_tool_error(phase: str, type_name: str, message: str) -> BaseExcepti
     return RecordedCallError(type_name, message)
 
 
-def _restore_tool_stream(recorded: Any) -> _RestoredToolStream:
-    """Strictly validate a recorded tool-stream envelope; fail closed on any deviation."""
-    if type(recorded) is not dict:
+def _restore_tool_stream(recorded: Any, *, asynchronous: bool) -> _RestoredToolStream:
+    """Strictly validate a recorded tool-stream envelope; fail closed on any deviation.
+
+    The complete envelope is first driven through the exact-type ``_copy_tool_json``
+    codec, so nested tuples, subclasses, hostile containers, cycles, over-depth values,
+    non-finite floats, and non-``str`` keys are rejected -- without invoking any user
+    ``__str__``/``__repr__``/``model_dump`` -- and every returned item and return value
+    is a detached copy that never aliases ``Replayer.events``. ``completion``/``phase``
+    are checked to be exact ``str`` before set membership so a list/dict there fails
+    closed with ``StrictJSONError`` rather than leaking an unhashable ``TypeError``.
+    """
+    detached = _copy_tool_json(recorded)
+    if type(detached) is not dict:
         raise StrictJSONError("recorded tool stream must be a JSON object")
-    if recorded.get(_TOOL_STREAM_MARKER) is not True:
+    if detached.get(_TOOL_STREAM_MARKER) is not True:
         raise StrictJSONError("recorded tool stream is missing its marker")
-    version = recorded.get("version")
+    version = detached.get("version")
     if type(version) is not int or version != _TOOL_STREAM_VERSION:
         raise StrictJSONError("recorded tool stream has an unsupported version")
-    completion = recorded.get("completion")
-    if completion not in _STREAM_COMPLETIONS:
+    completion = detached.get("completion")
+    if type(completion) is not str or completion not in _STREAM_COMPLETIONS:
         raise StrictJSONError("recorded tool stream completion is invalid")
-    items = recorded.get("items")
+    items = detached.get("items")
     if type(items) is not list:
         raise StrictJSONError("recorded tool stream items must be a list")
-    keys = set(recorded)
+    keys = set(detached)
     if completion == "error":
         if keys != {_TOOL_STREAM_MARKER, "version", "items", "completion", "phase", "error"}:
             raise StrictJSONError("recorded tool stream error envelope has unexpected keys")
-        phase = recorded.get("phase")
-        if phase not in _STREAM_ERROR_PHASES:
+        phase = detached.get("phase")
+        if type(phase) is not str or phase not in _STREAM_ERROR_PHASES:
             raise StrictJSONError("recorded tool stream error phase is invalid")
-        error = recorded.get("error")
+        error = detached.get("error")
         if type(error) is not dict or set(error) != {"type", "message"}:
             raise StrictJSONError("recorded tool stream error payload is invalid")
-        if type(error["type"]) is not str or type(error["message"]) is not str:
+        error_type = error["type"]
+        message = error["message"]
+        if type(error_type) is not str or type(message) is not str:
             raise StrictJSONError("recorded tool stream error fields must be strings")
         if phase == "start" and items:
             raise StrictJSONError("a start-phase tool stream error must have no items")
-        terminal = _restore_tool_error(phase, error["type"], error["message"])
+        if phase == "cancellation" and error_type != "CancelledError":
+            raise StrictJSONError("a cancellation tool stream error must be CancelledError")
+        if phase != "cancellation" and error_type == "CancelledError":
+            raise StrictJSONError("CancelledError is only valid for the cancellation phase")
+        terminal = _restore_tool_error(phase, error_type, message)
         return _RestoredToolStream(items, completion, None, terminal)
     if keys != {_TOOL_STREAM_MARKER, "version", "items", "completion", "return"}:
         raise StrictJSONError("recorded tool stream envelope has unexpected keys")
-    return _RestoredToolStream(items, completion, recorded.get("return"), None)
+    return_value = detached.get("return")
+    if completion == "closed" and return_value is not None:
+        raise StrictJSONError("a closed tool stream must have a null return value")
+    if asynchronous and return_value is not None:
+        raise StrictJSONError("an async tool stream must have a null return value")
+    return _RestoredToolStream(items, completion, return_value, None)
 
 
 def _dispatch_tool_stream(session: Any, name: str, input_value: Any) -> tuple[bool, Any]:
@@ -591,7 +612,7 @@ def wrap_tool(
             input_value = _serialize_input(args, kwargs)
             replayed, recorded = _dispatch_tool_stream(cassette, tool_name, input_value)
             if replayed:
-                return _AsyncReplayToolStream(_restore_tool_stream(recorded))
+                return _AsyncReplayToolStream(_restore_tool_stream(recorded, asynchronous=True))
             return _AsyncRecordingToolStream(
                 async_generator(*args, **kwargs), cassette, tool_name, input_value
             )
@@ -606,7 +627,7 @@ def wrap_tool(
             input_value = _serialize_input(args, kwargs)
             replayed, recorded = _dispatch_tool_stream(cassette, tool_name, input_value)
             if replayed:
-                return _ReplayToolStream(_restore_tool_stream(recorded))
+                return _ReplayToolStream(_restore_tool_stream(recorded, asynchronous=False))
             return _RecordingToolStream(
                 generator(*args, **kwargs), cassette, tool_name, input_value
             )

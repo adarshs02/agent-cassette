@@ -24,6 +24,7 @@ from agent_cassette import (
 )
 from agent_cassette.json_codec import StrictJSONError
 from agent_cassette.storage import load_events
+from agent_cassette.tools import _restore_tool_stream
 
 _INPUT = {"args": ["q"], "kwargs": {}}
 
@@ -49,12 +50,63 @@ class _StrSub(str):
     pass
 
 
+class _IntSub(int):
+    pass
+
+
+class _FloatSub(float):
+    pass
+
+
 class _ListSub(list):
     pass
 
 
+class _DictSub(dict):
+    pass
+
+
+class _HostileList(list):
+    """A list subclass whose iteration must never run (exact-type reject first)."""
+
+    def __iter__(self):
+        raise AssertionError("__iter__ called")
+
+
+class _HostileDict(dict):
+    """A dict subclass whose items() must never run (exact-type reject first)."""
+
+    def items(self):
+        raise AssertionError("items called")
+
+
 class _CustomError(Exception):
     """A tool exception type that is not on the replay allowlist."""
+
+
+def _success_envelope(**overrides: Any) -> dict[str, Any]:
+    envelope: dict[str, Any] = {
+        "__agent_cassette_tool_stream__": True,
+        "version": 1,
+        "items": [],
+        "completion": "exhausted",
+        "return": None,
+    }
+    envelope.update(overrides)
+    return envelope
+
+
+def _error_envelope(**overrides: Any) -> dict[str, Any]:
+    envelope: dict[str, Any] = {
+        "__agent_cassette_tool_stream__": True,
+        "version": 1,
+        "items": [],
+        "completion": "error",
+        "phase": "iteration",
+        "error": {"type": "ValueError", "message": "boom"},
+    }
+    envelope.update(overrides)
+    return envelope
 
 
 def _collect_sync(iterator: Any) -> tuple[list[Any], Any]:
@@ -662,7 +714,11 @@ def test_invalid_sync_return_fails_with_no_event(tmp_path):
         (1, 2),
         _Grade.A,
         _StrSub("x"),
+        _IntSub(5),
+        _FloatSub(1.5),
         _ListSub([1]),
+        _DictSub({"k": 1}),
+        {_StrSub("k"): 1},
         _Hostile(),
     ],
 )
@@ -1107,3 +1163,277 @@ def test_error_then_next_and_close_do_not_duplicate(tmp_path):
             next(proxy)
 
     assert len(load_events(path)) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Replay-envelope strict validation (Phase B correction)
+# --------------------------------------------------------------------------- #
+#
+# Python-only invalid shapes (tuples, subclasses, cycles, over-depth, non-finite)
+# cannot be seeded through a real cassette (event storage rejects them), so these
+# exercise the private restore helper directly with a hand-built envelope.
+
+
+def test_restore_rejects_nested_tuple_in_items():
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(_success_envelope(items=[[1, (2, 3)]]), asynchronous=False)
+
+
+@pytest.mark.parametrize(
+    "bad_return",
+    [
+        (1, 2),
+        _Grade.A,
+        _StrSub("x"),
+        _IntSub(5),
+        _FloatSub(1.5),
+        _ListSub([1]),
+        _DictSub({"k": 1}),
+        float("nan"),
+        float("inf"),
+    ],
+)
+def test_restore_rejects_invalid_return_values(bad_return):
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(
+            _success_envelope(items=["a"], **{"return": bad_return}), asynchronous=False
+        )
+
+
+def test_restore_rejects_cyclic_return():
+    cycle: list[Any] = []
+    cycle.append(cycle)
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(_success_envelope(**{"return": cycle}), asynchronous=False)
+
+
+def test_restore_rejects_over_deep_return():
+    deep: Any = 1
+    for _ in range(100):
+        deep = [deep]
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(_success_envelope(**{"return": deep}), asynchronous=False)
+
+
+def test_restore_rejects_str_subclass_key_in_item():
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(_success_envelope(items=[{_StrSub("k"): 1}]), asynchronous=False)
+
+
+def test_restore_rejects_hostile_list_subclass_without_iterating():
+    envelope = _success_envelope(items=[_HostileList([1, 2])])
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(envelope, asynchronous=False)
+
+
+def test_restore_rejects_hostile_dict_subclass_without_reading_items():
+    envelope = _success_envelope(items=[_HostileDict({"k": 1})])
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(envelope, asynchronous=False)
+
+
+def test_restore_rejects_list_completion_without_typeerror():
+    # completion=[] is JSON-representable, so a real seeded cassette exercises the
+    # production replay path; it must fail closed with StrictJSONError, not TypeError.
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(_success_envelope(completion=[]), asynchronous=False)
+
+
+def test_restore_rejects_list_phase_without_typeerror():
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(_error_envelope(phase=[]), asynchronous=False)
+
+
+def test_restore_rejects_closed_with_non_none_return():
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(
+            _success_envelope(completion="closed", **{"return": "x"}), asynchronous=False
+        )
+
+
+def test_restore_rejects_async_exhausted_with_non_none_return():
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(
+            _success_envelope(completion="exhausted", **{"return": "x"}), asynchronous=True
+        )
+
+
+def test_restore_rejects_cancellation_phase_with_non_cancelled_type():
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(
+            _error_envelope(phase="cancellation", error={"type": "ValueError", "message": "x"}),
+            asynchronous=True,
+        )
+
+
+@pytest.mark.parametrize("phase", ["start", "iteration", "close"])
+def test_restore_rejects_cancelled_type_outside_cancellation_phase(phase):
+    items = [] if phase == "start" else ["a"]
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(
+            _error_envelope(
+                phase=phase,
+                items=items,
+                error={"type": "CancelledError", "message": "x"},
+            ),
+            asynchronous=False,
+        )
+
+
+def test_seeded_list_completion_replays_closed_via_wrapper(tmp_path):
+    # End-to-end through the wrapper on a real cassette: JSON-representable garbage
+    # must raise StrictJSONError at call time, never a raw TypeError.
+    path = tmp_path / "c.jsonl"
+    _seed_stream_event(path, _success_envelope(completion=[]))
+
+    def stream(query):
+        yield "a"  # pragma: no cover
+
+    with Cassette.replay(path) as replayer:
+        with pytest.raises(StrictJSONError):
+            wrap_tool(stream, replayer, name="stream")("q")
+
+
+def test_seeded_closed_with_return_fails_closed_via_wrapper(tmp_path):
+    path = tmp_path / "c.jsonl"
+    _seed_stream_event(path, _success_envelope(completion="closed", **{"return": "x"}))
+
+    def stream(query):
+        yield "a"  # pragma: no cover
+
+    with Cassette.replay(path) as replayer:
+        with pytest.raises(StrictJSONError):
+            wrap_tool(stream, replayer, name="stream")("q")
+
+
+def test_replayed_nested_item_mutation_does_not_mutate_loaded_event(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    def stream(query):
+        yield {"n": 1}
+
+    with Cassette.record(path) as cassette:
+        list(wrap_tool(stream, cassette)("q"))
+
+    def forbidden(query):
+        raise AssertionError("live body entered during replay")
+        yield  # pragma: no cover
+
+    with Cassette.replay(path) as replayer:
+        proxy = wrap_tool(forbidden, replayer, name="stream")("q")
+        emitted = next(proxy)
+        emitted["n"] = 999  # mutate the replayed item
+        # The loaded event that the Replayer still holds must be untouched.
+        assert replayer.events[0].output["items"][0] == {"n": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Async parity (Phase B correction)
+# --------------------------------------------------------------------------- #
+
+
+def test_async_start_error_replays(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    async def stream(query):
+        raise ValueError("early")
+        yield  # pragma: no cover
+
+    async def record():
+        async with Cassette.record(path) as cassette:
+            proxy = wrap_tool(stream, cassette)("q")
+            with pytest.raises(ValueError, match="early"):
+                await proxy.__anext__()
+
+    asyncio.run(record())
+
+    events = load_events(path)
+    assert len(events) == 1
+    assert events[0].type == EventType.ERROR
+    assert events[0].output["phase"] == "start"
+    assert events[0].output["items"] == []
+
+    async def forbidden(query):
+        raise AssertionError("live body entered during replay")
+        yield  # pragma: no cover
+
+    async def replay():
+        async with Cassette.replay(path) as replayer:
+            proxy = wrap_tool(forbidden, replayer, name="stream")("q")
+            with pytest.raises(ValueError, match="early"):
+                await proxy.__anext__()
+
+    asyncio.run(replay())
+
+
+def test_async_unknown_exception_replays_as_recorded_call_error(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    async def stream(query):
+        yield "a"
+        raise _CustomError("weird")
+
+    async def record():
+        async with Cassette.record(path) as cassette:
+            proxy = wrap_tool(stream, cassette)("q")
+            assert await proxy.__anext__() == "a"
+            with pytest.raises(_CustomError, match="weird"):
+                await proxy.__anext__()
+
+    asyncio.run(record())
+
+    async def forbidden(query):
+        raise AssertionError("live body entered during replay")
+        yield  # pragma: no cover
+
+    async def replay():
+        async with Cassette.replay(path) as replayer:
+            proxy = wrap_tool(forbidden, replayer, name="stream")("q")
+            assert await proxy.__anext__() == "a"
+            with pytest.raises(RecordedCallError):
+                await proxy.__anext__()
+
+    asyncio.run(replay())
+
+
+def test_async_invalid_item_closes_and_persists_no_event(tmp_path):
+    path = tmp_path / "c.jsonl"
+    finalized: list[bool] = []
+
+    async def stream(query):
+        try:
+            yield object()
+        finally:
+            finalized.append(True)
+
+    async def scenario():
+        async with Cassette.record(path) as cassette:
+            proxy = wrap_tool(stream, cassette)("q")
+            with pytest.raises(StrictJSONError):
+                await proxy.__anext__()
+
+    asyncio.run(scenario())
+    assert finalized == [True]
+    assert load_events(path) == []
+
+
+def test_async_unstarted_stream_persists_no_event(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    async def stream(query):
+        yield query  # pragma: no cover
+
+    async def scenario():
+        async with Cassette.record(path) as cassette:
+            wrap_tool(stream, cassette)("q")
+
+    asyncio.run(scenario())
+    assert load_events(path) == []
+
+
+@pytest.mark.parametrize("missing", ["items", "return", "completion", "version"])
+def test_restore_missing_key_fails_closed_not_keyerror(missing):
+    envelope = _success_envelope()
+    envelope.pop(missing)
+    with pytest.raises(StrictJSONError):
+        _restore_tool_stream(envelope, asynchronous=False)

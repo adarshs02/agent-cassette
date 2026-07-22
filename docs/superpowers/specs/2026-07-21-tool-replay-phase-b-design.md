@@ -1,10 +1,11 @@
 # Tool record/replay — Phase B design (generator streaming)
 
-Status: **implemented-pending-review** (2026-07-21). Scope: **Phase B specification,
-implemented.** Base: accepted Phase A checkpoint `c7b4523` on `release/1.1.0`.
-Implementation: committed on `release/1.1.0`; the exact base/head SHAs are recorded in the
-coding-agent handoff report (the spec is committed together with the implementation, so its
-own commit hash cannot be embedded without invalidating it).
+Status: **implemented-pending-review** (2026-07-21; replay-envelope validation correction
+2026-07-22). Scope: **Phase B specification, implemented.** Base: accepted Phase A
+checkpoint `c7b4523` on `release/1.1.0`. Implementation: committed on `release/1.1.0`; the
+exact base/head SHAs are recorded in the coding-agent handoff report (the spec is committed
+together with the implementation, so its own commit hash cannot be embedded without
+invalidating it).
 
 Feature goal (all phases): replay a full agent loop without executing real tools. Phase B
 adds streaming tools. `1.1.0` stays unpublished until A, B, C1, C2, and D all pass.
@@ -89,11 +90,20 @@ Terminal failure:
 }
 ```
 
-Replay strictly validates the envelope: exact marker/version scalar types, exact
-list/dict containers, exact key sets, `phase`/`completion` enums, exact string error
-fields, start errors with no items, no extra keys, plus the normal JSON depth/cycle/finite
-rules. Malformed envelopes fail closed. Error type names come from `type(error).__name__`;
-the exception and payload are never `repr`'d.
+Replay strictly validates the envelope. `_restore_tool_stream(recorded, *, asynchronous)`
+first drives the **complete** envelope through the exact-type `_copy_tool_json` codec, so
+nested tuples, subclasses, hostile containers, cycles, over-depth values, non-finite floats,
+and non-`str` keys are rejected — without invoking any user `__str__`/`__repr__`/`model_dump`
+— and every returned item and return value is a detached copy that never aliases
+`Replayer.events`. It then checks exact marker/version scalar types, exact `str`
+`completion`/`phase` **before** set membership (a list/dict there fails closed with
+`StrictJSONError`, never a raw unhashable `TypeError`), exact key sets, exact string error
+fields, and start errors with no items. Semantic shape is enforced, not only key shape:
+`completion == "closed"` requires `return is None`; an async replay envelope requires
+`return is None` even when exhausted; `phase == "cancellation"` requires error type exactly
+`CancelledError`; and `CancelledError` is rejected for every non-cancellation phase.
+Malformed envelopes fail closed. Error type names come from `type(error).__name__`; the
+exception and payload are never `repr`'d.
 
 ## 4. Implementation structure
 
