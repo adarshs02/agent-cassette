@@ -79,6 +79,21 @@ def _encode_agents_tool_result(value: Any, structured_types: tuple[type, ...]) -
     return cast(dict[str, Any], serialize_recorded_value(envelope))
 
 
+def _exact_json_equal(left: Any, right: Any) -> bool:
+    """Recursive, type-exact JSON equality (so ``True`` never equals ``1``)."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        if left.keys() != right.keys():
+            return False
+        return all(_exact_json_equal(left[key], right[key]) for key in left)
+    if type(left) is list:
+        return len(left) == len(right) and all(
+            _exact_json_equal(item, other) for item, other in zip(left, right, strict=True)
+        )
+    return bool(left == right)
+
+
 def _reconstruct_structured(value: Any, structured_types: tuple[type, ...]) -> Any:
     if type(value) is not dict:
         raise StrictJSONError("structured tool output must be a JSON object")
@@ -92,11 +107,21 @@ def _reconstruct_structured(value: Any, structured_types: tuple[type, ...]) -> A
         # Never import a class named by cassette data; only fixed captured classes.
         raise StrictJSONError("unknown structured tool output type discriminator")
     try:
-        return selected.model_validate(value)  # type: ignore[attr-defined]
-    except Exception as error:  # noqa: BLE001 -- SDK/pydantic validation failure
+        instance = selected.model_validate(value)  # type: ignore[attr-defined]
+        reserialized = serialize_sdk_value(instance, trusted_roots=_TRUSTED_ROOTS)
+    except Exception:  # noqa: BLE001 -- SDK/pydantic validation failure; hide payload cause
+        # Raise ``from None`` so no chained SDK/pydantic exception can expose the
+        # rejected cassette payload through its traceback or repr.
         raise StrictJSONError(
             f"structured tool output failed SDK validation: {selected.__qualname__}"
-        ) from error
+        ) from None
+    # Require an exact, recursive round-trip: reject any dropped key, inserted
+    # default, or coerced value that Pydantic would otherwise accept silently.
+    if not _exact_json_equal(reserialized, value):
+        raise StrictJSONError(
+            f"structured tool output did not round-trip exactly: {selected.__qualname__}"
+        ) from None
+    return instance
 
 
 def _decode_agents_tool_result(recorded: Any, structured_types: tuple[type, ...]) -> Any:
@@ -195,7 +220,9 @@ class _AgentsToolBridgeState:
             self._maybe_wrap(tool)
 
     def _maybe_wrap(self, tool: Any) -> None:
-        if type(tool) is not self._function_tool_cls:
+        # isinstance (not exact type): a user's SDK-compatible FunctionTool subclass is
+        # still an ordinary function tool and must get zero-live replay.
+        if self._function_tool_cls is None or not isinstance(tool, self._function_tool_cls):
             return
         if self._is_agent_as_tool(tool):
             return
@@ -210,21 +237,29 @@ class _AgentsToolBridgeState:
 
     @staticmethod
     def _is_agent_as_tool(tool: Any) -> bool:
-        flag = getattr(tool, "_is_agent_tool", None)
-        if flag is True:
+        # Conservative across the supported SDK range: exclude when the flag is set OR
+        # an agent instance is present (an ordinary FunctionTool has _agent_instance None),
+        # so a False flag alongside an agent instance is still excluded.
+        if getattr(tool, "_is_agent_tool", None) is True:
             return True
-        # Corroborating fallback for SDK versions without the explicit flag.
-        return flag is None and getattr(tool, "_agent_instance", None) is not None
+        return getattr(tool, "_agent_instance", None) is not None
 
     def is_bridged(self, tool: Any) -> bool:
         entry = self._patched.get(id(tool))
         return entry is not None and getattr(tool, "on_invoke_tool", None) is entry[2]
 
     def record_call_meta(self, tool: Any, tool_call_id: Any, agent_name: Any) -> None:
+        # Only bridged tools consume call metadata; never retain it for shell/custom/
+        # agent-as-tool calls, so a long run does not grow _call_meta until context exit.
+        if not self.is_bridged(tool):
+            return
         self._call_meta[(id(tool), tool_call_id)] = {
             "agent": agent_name,
             "tool_call_id": tool_call_id,
         }
+
+    def discard_call_meta(self, tool: Any, tool_call_id: Any) -> None:
+        self._call_meta.pop((id(tool), tool_call_id), None)
 
     def _pop_call_meta(self, tool: Any, tool_call_id: Any, context: Any) -> dict[str, Any]:
         meta = self._call_meta.pop((id(tool), tool_call_id), None)
@@ -331,12 +366,16 @@ class AgentCassetteRunHooks:
     async def on_tool_end(self, context: Any, agent: Any, tool: Any, result: Any) -> None:
         # A bridged FunctionTool already recorded its TOOL_RESULT at the callback
         # boundary; do not write a second one. Non-bridged tools keep lifecycle capture.
-        if self._bridge is not None and self._bridge.is_bridged(tool):
-            return
+        tool_call_id = getattr(context, "tool_call_id", None)
+        if self._bridge is not None:
+            # Defensively drop any lingering call-state key before returning/recording.
+            self._bridge.discard_call_meta(tool, tool_call_id)
+            if self._bridge.is_bridged(tool):
+                return
         self._add(
             EventType.TOOL_RESULT,
             _name(tool),
-            input={"agent": _name(agent), "tool_call_id": getattr(context, "tool_call_id", None)},
+            input={"agent": _name(agent), "tool_call_id": tool_call_id},
             output=result,
         )
 

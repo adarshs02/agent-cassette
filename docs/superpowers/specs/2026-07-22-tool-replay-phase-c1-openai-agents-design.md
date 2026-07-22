@@ -1,10 +1,11 @@
 # Tool record/replay — Phase C1 design (OpenAI Agents FunctionTool bridge)
 
-Status: **implemented-pending-review** (2026-07-22). Scope: **Phase C1 specification,
-implemented.** Base: accepted Phase B head `b1f1437` on `release/1.1.0`. Implementation is
-committed on `release/1.1.0`; the exact base/head SHAs are recorded in the coding-agent
-handoff report (the spec is committed with the implementation, so its own commit hash
-cannot be embedded without invalidating it).
+Status: **implemented-pending-review** (2026-07-22; strict-structured-replay and
+bridge-coverage correction 2026-07-22). Scope: **Phase C1 specification, implemented.** Base:
+accepted Phase B head `b1f1437` on `release/1.1.0`. Implementation is committed on
+`release/1.1.0`; the exact base/head SHAs are recorded in the coding-agent handoff report
+(the spec is committed with the implementation, so its own commit hash cannot be embedded
+without invalidating it).
 
 Feature goal (all phases): replay a full agent loop without executing real tools. C1 bridges
 ordinary OpenAI Agents SDK `FunctionTool` callbacks. `1.1.0` stays unpublished until A, B,
@@ -46,9 +47,13 @@ its original callback and installed wrapper, and active tool-call metadata keyed
 identity plus tool-call ID.
 
 - `patch_agent(agent)` wraps each ordinary `FunctionTool` in `agent.tools` at most once and
-  leaves other families untouched. Called before a runner invocation (starting agent from
-  the first positional / `starting_agent`) and again from `on_agent_start` (which runs after
-  user hooks, so tools they add are bridged before the first tool executes).
+  leaves other families untouched. Wrapping is by `isinstance(tool, FunctionTool)` (an SDK-
+  compatible subclass is an ordinary function tool and gets zero-live replay); result
+  structured-output classes stay exact-type only. Called before a runner invocation (starting
+  agent from the first positional / `starting_agent`) and again from `on_agent_start` (which
+  runs after user hooks, so tools they add are bridged before the first tool executes).
+- Call metadata is recorded only for bridged tools and discarded after use (and defensively at
+  `on_tool_end`), so a long run of shell/custom/agent-as-tool calls never grows the map.
 - `on_handoff` patches the destination agent before recording; no private handoff traversal.
 - A shared `FunctionTool` is wrapped once. `is_bridged(tool)` verifies the tool still points
   at the installed wrapper; if user code replaced the callback, the lifecycle `TOOL_RESULT`
@@ -56,8 +61,10 @@ identity plus tool-call ID.
 - All callbacks and `Runner` descriptors are restored on context exit, including exceptional
   exits; a user-replaced callback is never overwritten. No module-global cassette or context
   variable.
-- Agent-as-tool `FunctionTool` values are excluded (`_is_agent_tool is True`, with
-  `_agent_instance` as a corroborating fallback), so their nested run replays in order.
+- Agent-as-tool `FunctionTool` values are excluded conservatively — `_is_agent_tool is True`
+  **or** `_agent_instance is not None` (an ordinary tool has `_agent_instance` None) — so a
+  `False` flag alongside an agent instance is still excluded and their nested run replays in
+  order.
 
 ## 4. Bridged callback
 
@@ -95,8 +102,13 @@ validated before persistence.
 Decoding: strict-copy the whole envelope with `serialize_recorded_value`, require exact
 marker/version/kind/key shape. `json` returns a detached JSON value. Structured kinds
 reconstruct only the fixed captured class references, selected by the exact SDK `type`
-discriminator (`text`/`image`/`file`); a class is never imported by name from cassette data,
-and an SDK validation failure raises a type/path-only `StrictJSONError`. Exact JSON without
+discriminator (`text`/`image`/`file`); a class is never imported by name from cassette data.
+After `model_validate`, the reconstructed instance is re-serialized through the trusted SDK
+serializer and required to match the detached cassette value by an exact recursive
+type-and-value comparator (so `True` never equals `1`); any dropped key, inserted default, or
+coercion Pydantic would otherwise accept silently is rejected. An SDK validation or round-trip
+failure raises a type/path-only `StrictJSONError` `from None`, so no chained Pydantic cause can
+expose the rejected payload. Exact JSON without
 the marker is treated as a legacy pre-C1 `TOOL_RESULT` (strict-copied and returned); a
 present-but-malformed marker fails closed. A Hybrid `Return` injection may supply exact JSON
 or an exact structured SDK object directly (returned safely on the injected run; the
@@ -117,8 +129,19 @@ left installed after context exit.
 credential), and skips cleanly without the extra. It covers the envelope codec
 (json/structured/structured_list/legacy/malformed/unknown-discriminator/unsupported), the
 two-turn zero-live loop, event order and single result event, structured round-trips,
-allowlisted exceptions, non-`FunctionTool` lifecycle capture, late-added and handoff-target
-tools, wrap-once, callback and `Runner` restoration after normal and exceptional exit,
-user-replaced callbacks, concurrent unique-ID calls, `run_sync`/`run_streamed`, Hybrid
-`Return`/`Raise` on `tool_result`, and agent-as-tool exclusion. The existing lifecycle and
-serialization-trust suites remain green.
+allowlisted and unknown-type exceptions, non-`FunctionTool` lifecycle capture, late-added and
+handoff-target tools, wrap-once, callback and `Runner` restoration after normal and
+exceptional exit, user-replaced callbacks, concurrent unique-ID calls, and agent-as-tool
+exclusion.
+
+Correction coverage: strict structured replay (extra key, missing default, and coercion all
+rejected; validation failure carries no payload-bearing cause; valid envelopes still
+round-trip); `_is_agent_tool=False` with a non-`None` `_agent_instance` stays unbridged; a real
+`FunctionTool` subclass is bridged and skips its live callback on replay; repeated
+non-`FunctionTool`/agent-as-tool calls leave call metadata empty; a complete nested
+agent-as-tool run keeps outer-call → nested-transcript → outer-result order and replays with the
+nested real tool never executing; an output-guardrail simulation records the raw result and runs
+the guardrail exactly once on record and once on replay; `run_sync` and fully consumed
+`run_streamed` are exercised for **record and replay** with a zero-live sentinel and
+`remaining == 0`; and Hybrid `Return`/`Raise`/`Delay(then=Return)` on `tool_result`. The
+existing lifecycle and serialization-trust suites remain green.

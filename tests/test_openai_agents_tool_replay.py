@@ -20,7 +20,15 @@ from agents.tool import (  # noqa: E402
     ToolOutputText,
 )
 
-from agent_cassette import Cassette, EventType, InjectionRule, Raise, Return  # noqa: E402
+from agent_cassette import (  # noqa: E402
+    Cassette,
+    Delay,
+    EventType,
+    InjectionRule,
+    Raise,
+    RecordedCallError,
+    Return,
+)
 from agent_cassette.integrations.openai_agents import (  # noqa: E402
     _AgentsToolBridgeState,
     _decode_agents_tool_result,
@@ -632,13 +640,38 @@ def test_concurrent_calls_unique_ids_non_strict(tmp_path, monkeypatch):
     assert {r["query"] for r in results} == {"x", "y"}
 
 
-def test_run_sync_and_run_streamed_paths(tmp_path, monkeypatch):
+def _forbidden_search_tool():
+    @function_tool
+    def forbidden(query: str) -> dict:
+        "forbidden"
+        raise AssertionError("live tool callback executed during replay")
+
+    forbidden.name = "search"
+    return forbidden
+
+
+def test_run_sync_record_and_replay_zero_live(tmp_path, monkeypatch):
     path = tmp_path / "c.jsonl"
-    tool = _search_tool([])
-    agent = _Agent("a", [tool])
 
     def run_sync(agent, prompt, *, hooks=None):
         return asyncio.run(_drive_single_tool(agent, prompt, hooks=hooks))
+
+    calls: list[str] = []
+    _install_runner(monkeypatch, run_sync=run_sync)
+    with Cassette.record(path) as cassette, patch_openai_agents(cassette):
+        rec = agents.Runner.run_sync(_Agent("a", [_search_tool(calls)]), "go")
+    assert rec == {"query": "agents", "hits": ["a", "b"]}
+    assert calls == ["agents"]
+
+    _install_runner(monkeypatch, run_sync=run_sync)
+    with Cassette.replay(path) as replaying, patch_openai_agents(replaying):
+        rep = agents.Runner.run_sync(_Agent("a", [_forbidden_search_tool()]), "go")
+        assert replaying.remaining == 0
+    assert rep == {"query": "agents", "hits": ["a", "b"]}
+
+
+def test_run_streamed_record_and_replay_zero_live(tmp_path, monkeypatch):
+    path = tmp_path / "c.jsonl"
 
     class _Streaming:
         def __init__(self, agent, prompt, hooks):
@@ -650,15 +683,20 @@ def test_run_sync_and_run_streamed_paths(tmp_path, monkeypatch):
     def run_streamed(agent, prompt, *, hooks=None):
         return _Streaming(agent, prompt, hooks)
 
-    _install_runner(monkeypatch, run_sync=run_sync, run_streamed=run_streamed)
+    calls: list[str] = []
+    _install_runner(monkeypatch, run_streamed=run_streamed)
     with Cassette.record(path) as cassette, patch_openai_agents(cassette):
-        sync_result = agents.Runner.run_sync(agent, "go")
-        streamed = agents.Runner.run_streamed(agent, "go2")
-        streamed_result = asyncio.run(streamed.consume())
+        streamed = agents.Runner.run_streamed(_Agent("a", [_search_tool(calls)]), "go")
+        rec = asyncio.run(streamed.consume())  # fully consumed inside both contexts
+    assert rec == {"query": "agents", "hits": ["a", "b"]}
+    assert calls == ["agents"]
 
-    assert sync_result == {"query": "agents", "hits": ["a", "b"]}
-    assert streamed_result == {"query": "agents", "hits": ["a", "b"]}
-    assert sum(1 for e in load_events(path) if e.type == EventType.TOOL_RESULT) == 2
+    _install_runner(monkeypatch, run_streamed=run_streamed)
+    with Cassette.replay(path) as replaying, patch_openai_agents(replaying):
+        streamed = agents.Runner.run_streamed(_Agent("a", [_forbidden_search_tool()]), "go")
+        rep = asyncio.run(streamed.consume())
+        assert replaying.remaining == 0
+    assert rep == {"query": "agents", "hits": ["a", "b"]}
 
 
 # --------------------------------------------------------------------------- #
@@ -812,3 +850,303 @@ def test_hybrid_return_injection_structured_list_on_tool_result(tmp_path, monkey
     with Cassette.replay(output) as replaying, patch_openai_agents(replaying):
         replayed = asyncio.run(agents.Runner.run(_Agent("a", [tool]), "go"))
     assert [type(item) for item in replayed] == [ToolOutputText, ToolOutputText]
+
+
+# --------------------------------------------------------------------------- #
+# Phase C1 correction — strict structured replay
+# --------------------------------------------------------------------------- #
+
+
+def _structured_envelope(value):
+    return {
+        "__agent_cassette_openai_agents_tool_result__": True,
+        "version": 1,
+        "kind": "structured",
+        "value": value,
+    }
+
+
+def test_structured_extra_key_rejected():
+    # Pydantic would silently drop the extra key; the strict round-trip must reject it.
+    with pytest.raises(StrictJSONError):
+        _decode_agents_tool_result(
+            _structured_envelope({"type": "text", "text": "ok", "extra": "x"}), _STRUCTURED
+        )
+
+
+def test_structured_missing_default_field_rejected():
+    # Omitting default fields lets Pydantic insert them; the round-trip must reject it.
+    with pytest.raises(StrictJSONError):
+        _decode_agents_tool_result(
+            _structured_envelope({"type": "image", "image_url": "http://x/y.png"}), _STRUCTURED
+        )
+
+
+def test_structured_coercion_or_invalid_rejected():
+    with pytest.raises(StrictJSONError):
+        _decode_agents_tool_result(_structured_envelope({"type": "text", "text": 123}), _STRUCTURED)
+
+
+def test_structured_validation_failure_has_no_payload_cause():
+    try:
+        _decode_agents_tool_result(_structured_envelope({"type": "text"}), _STRUCTURED)
+    except StrictJSONError as error:
+        assert error.__cause__ is None
+        assert error.__suppress_context__ is True
+        assert "text=" not in str(error) and "123" not in str(error)
+    else:  # pragma: no cover
+        raise AssertionError("expected StrictJSONError")
+
+
+def test_valid_structured_envelope_still_round_trips():
+    for obj in (ToolOutputText(text="hi"), ToolOutputImage(image_url="http://x/y.png")):
+        envelope = _encode_agents_tool_result(obj, _STRUCTURED)
+        restored = _decode_agents_tool_result(envelope, _STRUCTURED)
+        assert type(restored) is type(obj)
+
+
+# --------------------------------------------------------------------------- #
+# Phase C1 correction — bridge coverage
+# --------------------------------------------------------------------------- #
+
+
+def test_false_flag_with_agent_instance_unbridged():
+    tool = _search_tool([])
+    tool._is_agent_tool = False
+    tool._agent_instance = object()
+    agent = _Agent("a", [tool])
+    bridge = _AgentsToolBridgeState(
+        cassette=object(), function_tool_cls=FunctionTool, structured_types=()
+    )
+    bridge.patch_agent(agent)
+    assert not bridge.is_bridged(tool)
+
+
+def _subclass_tool(counter):
+    base = _search_tool(counter)
+
+    class _FunctionToolSubclass(FunctionTool):
+        pass
+
+    return _FunctionToolSubclass(
+        name=base.name,
+        description=base.description,
+        params_json_schema=base.params_json_schema,
+        on_invoke_tool=base.on_invoke_tool,
+    )
+
+
+def test_functiontool_subclass_is_bridged_and_zero_live(tmp_path, monkeypatch):
+    path = tmp_path / "c.jsonl"
+    calls: list[str] = []
+    tool = _subclass_tool(calls)
+    assert type(tool) is not FunctionTool and isinstance(tool, FunctionTool)
+    agent = _Agent("a", [tool])
+    _install_runner(monkeypatch, run=_drive_single_tool)
+    with Cassette.record(path) as cassette, patch_openai_agents(cassette):
+        rec = asyncio.run(agents.Runner.run(agent, "go"))
+    assert calls == ["agents"]
+    assert any(
+        e.type == EventType.TOOL_RESULT and e.metadata.get("tool_bridge") for e in load_events(path)
+    )
+
+    replay_calls: list[str] = []
+    forbidden = _subclass_tool(replay_calls)
+    forbidden.on_invoke_tool = _forbidden_search_tool().on_invoke_tool
+    _install_runner(monkeypatch, run=_drive_single_tool)
+    with Cassette.replay(path) as replaying, patch_openai_agents(replaying):
+        rep = asyncio.run(agents.Runner.run(_Agent("a", [forbidden]), "go"))
+        assert replaying.remaining == 0
+    assert rec == rep
+    assert replay_calls == []
+
+
+def test_nonbridged_calls_do_not_grow_call_meta():
+    bridge = _AgentsToolBridgeState(
+        cassette=object(), function_tool_cls=FunctionTool, structured_types=()
+    )
+    custom = _CustomTool("shell")
+    agent_tool = _search_tool([])
+    agent_tool._is_agent_tool = True
+    for call_id in ("c1", "c2", "c3"):
+        bridge.record_call_meta(custom, call_id, "a")
+        bridge.record_call_meta(agent_tool, call_id, "a")
+    assert bridge._call_meta == {}
+
+
+def test_nested_agent_as_tool_ordered_run_and_replay(tmp_path, monkeypatch):
+    path = tmp_path / "c.jsonl"
+    holder: dict = {}
+    nested_calls: list[str] = []
+
+    def build(nested_tool):
+        nested_agent = _Agent("nested", [nested_tool])
+
+        async def orchestrate(ctx, arguments):
+            hooks = holder["hooks"]
+            nctx = _Ctx(nested_agent, nested_tool, "nested_1", '{"query":"agents"}')
+            await hooks.on_agent_start(nctx, nested_agent)  # patches nested_tool
+            await hooks.on_tool_start(nctx, nested_agent, nested_tool)
+            inner = await nested_tool.on_invoke_tool(nctx, '{"query":"agents"}')
+            await hooks.on_tool_end(nctx, nested_agent, nested_tool, inner)
+            await hooks.on_agent_end(nctx, nested_agent, "nested-done")
+            return {"outer": "aggregated", "nested": inner}
+
+        agent_tool = FunctionTool(
+            name="researcher_agent",
+            description="agent as tool",
+            params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            on_invoke_tool=orchestrate,
+        )
+        agent_tool._is_agent_tool = True
+        return _Agent("orchestrator", [agent_tool]), agent_tool
+
+    async def drive(outer_agent, prompt, *, hooks=None):
+        holder["hooks"] = hooks
+        agent_tool = outer_agent.tools[0]
+        octx = _Ctx(outer_agent, agent_tool, "outer_1", "{}")
+        await hooks.on_agent_start(octx, outer_agent)
+        await hooks.on_tool_start(octx, outer_agent, agent_tool)
+        outer = await agent_tool.on_invoke_tool(octx, "{}")
+        await hooks.on_tool_end(octx, outer_agent, agent_tool, outer)
+        await hooks.on_agent_end(octx, outer_agent, "done")
+        return outer
+
+    outer_agent, _ = build(_search_tool(nested_calls))
+    _install_runner(monkeypatch, run=drive)
+    with Cassette.record(path) as cassette, patch_openai_agents(cassette):
+        rec = asyncio.run(agents.Runner.run(outer_agent, "go"))
+    assert nested_calls == ["agents"]
+
+    events = load_events(path)
+    names = [(e.type, e.name) for e in events]
+    outer_call = names.index((EventType.TOOL_CALL, "researcher_agent"))
+    nested_call = names.index((EventType.TOOL_CALL, "search"))
+    nested_result = names.index((EventType.TOOL_RESULT, "search"))
+    outer_result = names.index((EventType.TOOL_RESULT, "researcher_agent"))
+    # outer call, then nested transcript, then the outer result last.
+    assert outer_call < nested_call < nested_result < outer_result
+
+    replay_nested: list[str] = []
+    replay_agent, _ = build(_forbidden_search_tool_for(replay_nested))
+    _install_runner(monkeypatch, run=drive)
+    with Cassette.replay(path) as replaying, patch_openai_agents(replaying):
+        rep = asyncio.run(agents.Runner.run(replay_agent, "go"))
+        assert replaying.remaining == 0
+    assert rec == rep
+    assert replay_nested == []  # nested real tool never executed on replay
+
+
+def _forbidden_search_tool_for(counter):
+    @function_tool
+    def search(query: str) -> dict:
+        "forbidden nested"
+        counter.append(query)
+        raise AssertionError("nested tool executed during replay")
+
+    return search
+
+
+def test_output_guardrail_runs_once_per_run(tmp_path, monkeypatch):
+    path = tmp_path / "c.jsonl"
+    guardrail_runs: list[int] = []
+
+    def guardrail(value):
+        guardrail_runs.append(1)
+        return {"wrapped": value}
+
+    async def drive(agent, prompt, *, hooks=None):
+        tool = agent.tools[0]
+        ctx = _Ctx(agent, tool, "call_1", '{"query":"agents"}')
+        await hooks.on_tool_start(ctx, agent, tool)
+        raw = await tool.on_invoke_tool(ctx, '{"query":"agents"}')
+        final = guardrail(raw)  # output guardrail runs after the bridge
+        await hooks.on_tool_end(ctx, agent, tool, raw)
+        return final
+
+    _install_runner(monkeypatch, run=drive)
+    with Cassette.record(path) as cassette, patch_openai_agents(cassette):
+        rec = asyncio.run(agents.Runner.run(_Agent("a", [_search_tool([])]), "go"))
+    assert guardrail_runs == [1]  # exactly once on record
+    stored = next(e for e in load_events(path) if e.type == EventType.TOOL_RESULT)
+    assert stored.output["kind"] == "json"
+    assert stored.output["value"] == {"query": "agents", "hits": ["a", "b"]}  # raw, not wrapped
+
+    guardrail_runs.clear()
+    _install_runner(monkeypatch, run=drive)
+    with Cassette.replay(path) as replaying, patch_openai_agents(replaying):
+        rep = asyncio.run(agents.Runner.run(_Agent("a", [_forbidden_search_tool()]), "go"))
+    assert guardrail_runs == [1]  # exactly once on replay
+    assert rec == rep == {"wrapped": {"query": "agents", "hits": ["a", "b"]}}
+
+
+def test_unknown_tool_exception_replays_as_recorded_call_error(tmp_path, monkeypatch):
+    path = tmp_path / "c.jsonl"
+
+    @function_tool(failure_error_function=None)
+    def boom(query: str) -> str:
+        "boom"
+        raise _CustomToolError("custom failure")
+
+    async def drive(agent, prompt, *, hooks=None):
+        tool = agent.tools[0]
+        ctx = _Ctx(agent, tool, "call_1", '{"query":"x"}')
+        await hooks.on_tool_start(ctx, agent, tool)
+        with pytest.raises(_CustomToolError, match="custom failure"):
+            await tool.on_invoke_tool(ctx, '{"query":"x"}')
+
+    _install_runner(monkeypatch, run=drive)
+    with Cassette.record(path) as cassette, patch_openai_agents(cassette):
+        asyncio.run(agents.Runner.run(_Agent("a", [boom]), "go"))
+
+    ran: list[bool] = []
+
+    @function_tool(failure_error_function=None)
+    def forbidden(query: str) -> str:
+        "forbidden"
+        ran.append(True)
+        raise AssertionError("live executed on replay")
+
+    forbidden.name = "boom"
+
+    async def replay_drive(agent, prompt, *, hooks=None):
+        tool = agent.tools[0]
+        ctx = _Ctx(agent, tool, "call_1", '{"query":"x"}')
+        await hooks.on_tool_start(ctx, agent, tool)
+        with pytest.raises(RecordedCallError):
+            await tool.on_invoke_tool(ctx, '{"query":"x"}')
+
+    _install_runner(monkeypatch, run=replay_drive)
+    with Cassette.replay(path) as replaying, patch_openai_agents(replaying):
+        asyncio.run(agents.Runner.run(_Agent("a", [forbidden]), "go"))
+    assert ran == []
+
+
+def test_hybrid_delay_then_return_on_tool_result(tmp_path, monkeypatch):
+    from time import perf_counter
+
+    source = tmp_path / "source.jsonl"
+    output = tmp_path / "fork.jsonl"
+    with Cassette.record(source):
+        pass
+
+    calls: list[str] = []
+    tool = _search_tool(calls)
+    rule = InjectionRule(
+        Delay(0.01, then=Return({"cached": True})), event_type="tool_result", name="search"
+    )
+    _install_runner(monkeypatch, run=_drive_single_tool)
+    started = perf_counter()
+    with (
+        Cassette.fork(source, output, injections=(rule,)) as cassette,
+        patch_openai_agents(cassette),
+    ):
+        result = asyncio.run(agents.Runner.run(_Agent("a", [tool]), "go"))
+    elapsed = perf_counter() - started
+    assert result == {"cached": True}
+    assert calls == []
+    assert elapsed >= 0.01
+
+
+class _CustomToolError(Exception):
+    """A tool exception not on the replay allowlist."""
