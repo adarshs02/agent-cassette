@@ -42,6 +42,8 @@ agent-cassette replay run.jsonl -- python agent.py
 
 Your code needs no changes — supported clients (OpenAI, Anthropic) are patched for the run. On replay each call returns an inert, attribute-compatible response straight from the cassette.
 
+Tool calls replay too: wrap any Python tool with `wrap_tool`, and bridge OpenAI Agents `FunctionTool`s (`patch_openai_agents`) or registered LangChain tools (`wrap_langchain_tools`) so the agent loop replays deterministically without running the real tool body.
+
 ## Docs
 
 | Guide | What's in it |

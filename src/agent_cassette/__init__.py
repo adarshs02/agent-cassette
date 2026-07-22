@@ -56,6 +56,15 @@ def wrap_langchain(runnable, cassette, *, name="langchain.runnable"):
     return _wrap_langchain(runnable, cassette, name=name)
 
 
+def wrap_langchain_tools(tools, cassette, *, name_prefix="langchain.tool"):
+    """Lazily bridge LangChain ``BaseTool`` objects for record/replay (no core dependency)."""
+    from agent_cassette.integrations.langchain_tools import (
+        wrap_langchain_tools as _wrap_langchain_tools,
+    )
+
+    return _wrap_langchain_tools(tools, cassette, name_prefix=name_prefix)
+
+
 def langchain_callback_handler(cassette):
     """Create lifecycle tracing callbacks without making LangChain a core dependency."""
     from agent_cassette.integrations.langchain_callbacks import (
@@ -115,6 +124,7 @@ __all__ = [
     "wrap_anthropic",
     "wrap_gemini",
     "wrap_langchain",
+    "wrap_langchain_tools",
     "wrap_mcp",
     "wrap_mistral",
     "wrap_openai",

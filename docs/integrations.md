@@ -117,6 +117,42 @@ framework-level trace spans, add `langchain_callback_handler(cassette)` to your
 `config={"callbacks": [...]}`; trace events are marked observational and never disturb
 replay.
 
+Agent Cassette exposes **three distinct LangChain features**, and Agent Cassette is a
+deterministic test/replay layer, not a tracer:
+
+1. **Runnable boundary replay** — `wrap_langchain(runnable, cassette)` above.
+2. **Registered leaf-tool replay** — `wrap_langchain_tools(tools, cassette)` (below).
+3. **Observational lifecycle callbacks** — `langchain_callback_handler(cassette)` (tracing
+   only; record-only `CUSTOM` events filtered from strict replay).
+
+### Registered tool replay (`wrap_langchain_tools`)
+
+Bridge the registered tools you hand to a LangChain agent so their results record and replay:
+
+```python
+from agent_cassette import Cassette, wrap_langchain_tools
+
+with Cassette.record("agent.jsonl") as cassette:
+    tools = wrap_langchain_tools([search, calculator], cassette)
+    agent = create_agent(model=recorded_model, tools=tools)
+    result = agent.invoke({"messages": [...]})
+# The same construction is used with Cassette.replay.
+```
+
+`wrap_langchain_tools` returns bridged shallow clones (originals untouched) in the same order,
+bound to the given cassette session — use them only while that session is open. During record
+each tool's real `_run`/`_arun` runs once; during replay the agent loop, args-schema
+validation, callbacks, output formatting, and `handle_tool_error` still run while the real
+tool body is never called. It intercepts the protected `_run`/`_arun` boundary, matches on
+exact bounded-JSON `args`/`kwargs`/cleaned-`config`, and records one `TOOL_CALL` per call.
+
+Supported: `Tool`, `StructuredTool`, and custom `BaseTool` subclasses that customize
+`_run`/`_arun`; `invoke`/`ainvoke`/`run`/`arun`; `content` and `content_and_artifact` results
+(the SDK `ToolMessage`/artifact is preserved). Out of scope in 1.1: custom overrides of the
+four public methods, non-JSON runtime injection values, and direct `Document`/`BaseMessage`/
+Pydantic tool return objects. Leave orchestration tools that start nested cassette-instrumented
+runs **live** and bridge their leaf tools — the bridge fails closed on an ordering mismatch.
+
 ## MCP
 
 ```python

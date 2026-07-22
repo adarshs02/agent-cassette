@@ -57,6 +57,7 @@ EXPECTED_PUBLIC_API = {
     "wrap_anthropic",
     "wrap_gemini",
     "wrap_langchain",
+    "wrap_langchain_tools",
     "wrap_mcp",
     "wrap_mistral",
     "wrap_openai",

@@ -11,8 +11,9 @@
   strict JSON-native input/output validation.
 - **Framework capture** for the OpenAI Agents SDK (agents, LLM boundaries, tools,
   handoffs) and LangChain (Runnable boundaries + nested lifecycle spans). Ordinary OpenAI
-  Agents `FunctionTool` callbacks are bridged at `on_invoke_tool` so their results record
-  and replay deterministically without running the real tool.
+  Agents `FunctionTool` callbacks are bridged at `on_invoke_tool`, and registered LangChain
+  tools are bridged at the protected `_run`/`_arun` boundary (`wrap_langchain_tools`), so
+  their results record and replay deterministically without running the real tool.
 - **Time-travel forks** — replay a known prefix, then go live.
 - **Failure injection** — deterministic exceptions, return values, latency, and rate
   limits.

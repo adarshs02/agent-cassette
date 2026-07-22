@@ -1,6 +1,6 @@
 # Tool record/replay — Phase C1 design (OpenAI Agents FunctionTool bridge)
 
-Status: **implemented-pending-review** (2026-07-22; strict-structured-replay and
+Status: **implemented-approved** (2026-07-22; strict-structured-replay and
 bridge-coverage correction 2026-07-22). Scope: **Phase C1 specification, implemented.** Base:
 accepted Phase B head `b1f1437` on `release/1.1.0`. Implementation is committed on
 `release/1.1.0`; the exact base/head SHAs are recorded in the coding-agent handoff report

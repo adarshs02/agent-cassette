@@ -46,6 +46,16 @@ acceptance, then shipped as one release.
   is persisted, without rendering the value. Non-`FunctionTool` local tools keep
   lifecycle-only capture, agent-as-tool values replay their nested loop, and legacy pre-C1
   lifecycle cassettes still replay through an unmarked fallback.
+- LangChain registered-tool replay bridge (Phase C2): `wrap_langchain_tools(tools, cassette,
+  *, name_prefix="langchain.tool")` returns bridged shallow clones of installed `BaseTool`
+  objects (originals untouched) whose results record and replay through a versioned
+  tool-result envelope (reusing `TOOL_CALL`; no new `EventType` or schema version). During
+  replay the agent loop, args-schema validation, callbacks, output formatting, and
+  `handle_tool_error` still run while the real `_run`/`_arun` body is never called. Supports
+  `Tool`/`StructuredTool`/custom `BaseTool`, `invoke`/`ainvoke`/`run`/`arun`, and
+  `content`/`content_and_artifact` results; matches on strict bounded-JSON
+  args/kwargs/cleaned-config and translates a recorded `ToolException` so `handle_tool_error`
+  reruns. Complements — does not replace — `wrap_langchain` and `langchain_callback_handler`.
 
 ## [1.0.1] - 2026-07-21
 

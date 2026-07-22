@@ -86,6 +86,7 @@ EXPECTED_PUBLIC_SIGNATURES: dict[str, str] = {
     "wrap_anthropic": "(client: 'Client | None', cassette: 'Any', *, asynchronous: 'bool | None' = None) -> 'Client'",
     "wrap_gemini": "(client: 'Client | None', cassette: 'Any', *, asynchronous: 'bool | None' = None) -> 'Client'",
     "wrap_langchain": "(runnable, cassette, *, name='langchain.runnable')",
+    "wrap_langchain_tools": "(tools, cassette, *, name_prefix='langchain.tool')",
     "wrap_mcp": "(session: 'Session | None', cassette: 'Any', *, asynchronous: 'bool | None' = None) -> 'Session'",
     "wrap_mistral": "(client: 'Client | None', cassette: 'Any', *, asynchronous: 'bool | None' = None) -> 'Client'",
     "wrap_openai": "(client: 'Client | None', cassette: 'Any', *, asynchronous: 'bool | None' = None) -> 'Client'",
