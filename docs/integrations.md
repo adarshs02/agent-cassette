@@ -27,6 +27,52 @@ and handoffs.
 Python callers can also wrap explicitly with `wrap_openai`, `wrap_anthropic`, or patch
 constructors with `patch_openai` / `patch_anthropic`.
 
+### OpenAI Agents tool replay (`FunctionTool`)
+
+`patch_openai_agents(cassette)` (used automatically by `agent-cassette run` and available
+directly as a context manager) bridges ordinary SDK `FunctionTool` callbacks so their
+results record and replay:
+
+```python
+from agent_cassette import Cassette
+from agent_cassette.integrations.openai_agents import patch_openai_agents
+
+with Cassette.record("agent.jsonl") as cassette, patch_openai_agents(cassette):
+    result = await Runner.run(agent, "research agents")
+
+with Cassette.replay("agent.jsonl") as cassette, patch_openai_agents(cassette):
+    result = await Runner.run(agent, "research agents")  # tool callbacks never run
+```
+
+Agent Cassette is **not** a replacement for the SDK tracer: it replays the provider and
+local tool boundaries so agent loops become deterministic tests. On replay the SDK agent
+loop still runs against replayed model responses, hooks, guardrails, and handoffs — but the
+original Python tool callback is never invoked. The successful event sequence is unchanged
+from earlier cassettes: a lifecycle `TOOL_CALL` (from `on_tool_start`) immediately followed
+by a `TOOL_RESULT` recorded at the `FunctionTool.on_invoke_tool` boundary.
+
+Supported and unsupported in C1:
+
+- Ordinary `FunctionTool` callbacks are bridged. JSON-native results, and the SDK
+  structured outputs `ToolOutputText` / `ToolOutputImage` / `ToolOutputFileContent` (and a
+  homogeneous list of them), round-trip exactly; the replayed value is the same SDK type
+  downstream/user `on_tool_end` hooks saw. Unsupported outputs (tuples, subclasses,
+  arbitrary objects, mixed structured/JSON lists, cycles, over-depth, NaN/Inf, non-string
+  keys) fail before any success event is persisted, without rendering the value.
+- Other local tool families (non-`FunctionTool`) keep lifecycle-only capture
+  (`on_tool_start` → `TOOL_CALL`, `on_tool_end` → `TOOL_RESULT`).
+- Agent-as-tool `FunctionTool` values are **not** bridged: their orchestration callback
+  runs on replay so the nested loop's model/lifecycle events are consumed in order; the
+  nested ordinary tools are bridged when their agent starts, so no real nested tool runs.
+- A streamed run (`Runner.run_streamed`) must be created and fully consumed while both the
+  cassette session and `patch_openai_agents` contexts are open — patched callbacks are
+  restored on context exit (there is no GC/finalizer persistence).
+
+Legacy pre-C1 lifecycle cassettes replay through an unmarked fallback. A legacy
+`on_tool_end` value that had already been transformed by an output guardrail should be
+re-recorded, because C1 treats the recorded value as the callback result and runs the
+current guardrail again on replay.
+
 ## Mistral
 
 Install `agent-cassette[mistral]` and the Mistral client is patched for each `record`/`replay`

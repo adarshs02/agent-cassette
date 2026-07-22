@@ -35,6 +35,17 @@ acceptance, then shipped as one release.
   closed to record (abandoned streams persist nothing); `send(None)`/`asend(None)` act as
   `next()`/`anext()` while non-`None` `send`/`asend` and `throw`/`athrow` raise
   `NotImplementedError`.
+- OpenAI Agents `FunctionTool` replay bridge (Phase C1): `patch_openai_agents` now bridges
+  ordinary SDK `FunctionTool` callbacks at the public `on_invoke_tool` boundary so their
+  results record and replay through a versioned tool-result envelope (reusing `TOOL_RESULT`;
+  no new public export, `EventType`, or schema version). On replay the agent loop runs
+  against replayed model responses, hooks, guardrails, and handoffs while the original
+  Python tool callback is never invoked. JSON-native results and the SDK structured outputs
+  (`ToolOutputText`/`ToolOutputImage`/`ToolOutputFileContent`, and homogeneous lists of
+  them) round-trip to the exact SDK type; unsupported outputs fail before any success event
+  is persisted, without rendering the value. Non-`FunctionTool` local tools keep
+  lifecycle-only capture, agent-as-tool values replay their nested loop, and legacy pre-C1
+  lifecycle cassettes still replay through an unmarked fallback.
 
 ## [1.0.1] - 2026-07-21
 

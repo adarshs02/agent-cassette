@@ -10,7 +10,9 @@
   terminal return/error, and early close replay without running the real generator — with
   strict JSON-native input/output validation.
 - **Framework capture** for the OpenAI Agents SDK (agents, LLM boundaries, tools,
-  handoffs) and LangChain (Runnable boundaries + nested lifecycle spans).
+  handoffs) and LangChain (Runnable boundaries + nested lifecycle spans). Ordinary OpenAI
+  Agents `FunctionTool` callbacks are bridged at `on_invoke_tool` so their results record
+  and replay deterministically without running the real tool.
 - **Time-travel forks** — replay a known prefix, then go live.
 - **Failure injection** — deterministic exceptions, return values, latency, and rate
   limits.
