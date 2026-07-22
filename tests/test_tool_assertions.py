@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import json
 
@@ -35,6 +36,14 @@ def _tool_call(name, input_value=None, metadata=None):
 def _tool_call_error(name, input_value=None):
     """A failed logical tool call, shaped exactly like Recorder._error_metadata."""
     return (EventType.ERROR, name, input_value, {"_agent_cassette": {"call_type": "tool_call"}})
+
+
+class _IntColor(enum.IntEnum):
+    RED = 1
+
+
+class _IntSub(int):
+    pass
 
 
 # --------------------------------------------------------------------------- #
@@ -284,7 +293,32 @@ def test_rejects_bad_name(bad):
         tool_not_called(bad)
 
 
-@pytest.mark.parametrize("bad_count", [True, -1, 1.0, "1"])
+class _HostileName(str):
+    def __repr__(self):  # pragma: no cover - must never run
+        raise RuntimeError("name repr must not be called")
+
+    def __str__(self):  # pragma: no cover - must never run
+        raise RuntimeError("name str must not be called")
+
+
+@pytest.mark.parametrize("factory", [tool_called, tool_not_called])
+def test_rejects_str_subclass_name_without_rendering(factory):
+    # A hostile ``str`` subclass must be rejected at creation and must never reach the
+    # ``name!r`` result-formatting path.
+    with pytest.raises(ValueError):
+        factory(_HostileName("search"))
+
+
+@pytest.mark.parametrize("factory", [tool_called, tool_not_called])
+def test_rejects_str_subclass_match(factory):
+    class _MatchSub(str):
+        pass
+
+    with pytest.raises(ValueError):
+        factory("s", match=_MatchSub("exact"))
+
+
+@pytest.mark.parametrize("bad_count", [True, -1, 1.0, "1", _IntColor.RED, _IntSub(1)])
 def test_rejects_bad_count(bad_count):
     with pytest.raises(ValueError):
         tool_called("s", times=bad_count)
@@ -341,8 +375,18 @@ class _DictSub(dict):
     pass
 
 
-class _IntColor(enum.IntEnum):
-    RED = 1
+class _FloatSub(float):
+    pass
+
+
+class _HostileList(list):
+    def __iter__(self):  # pragma: no cover - must never run (rejected by exact type first)
+        raise RuntimeError("__iter__ must not be called")
+
+
+class _HostileDict(dict):
+    def items(self):  # pragma: no cover - must never run (rejected by exact type first)
+        raise RuntimeError("items must not be called")
 
 
 class _Hostile:
@@ -374,9 +418,13 @@ def _too_deep():
     [
         ("x",),  # tuple
         _IntColor.RED,  # IntEnum
+        _IntSub(1),  # int subclass
+        _FloatSub(1.0),  # float subclass
         _StrSub("x"),  # str subclass
         _ListSub([1]),  # list subclass
         _DictSub({"a": 1}),  # dict subclass
+        _HostileList([1]),  # list subclass with raising __iter__ — never iterated
+        _HostileDict({"a": 1}),  # dict subclass with raising items() — never called
         {1: "a"},  # non-str key
         {_StrSub("a"): 1},  # str-subclass key
         float("nan"),
@@ -385,6 +433,7 @@ def _too_deep():
         _too_deep(),
         _Hostile(),
         {"nested": _Hostile()},
+        {"nested": _HostileList([1])},  # rejection recurses without iterating
     ],
 )
 @pytest.mark.parametrize("factory", [tool_called, tool_not_called])
@@ -479,6 +528,141 @@ def test_consumed_events_order_and_deep_detachment(tmp_path):
         assert [e.input["args"] for e in replayer.consumed_events] == [["1"], ["2"]]
 
 
+def test_in_memory_lookalike_metadata_is_not_counted(tmp_path):
+    # Mutated in-memory Event objects with a dict *subclass* internal object or a
+    # str *subclass* call_type must not be counted as tool-call boundaries.
+    path = tmp_path / "c.jsonl"
+    _seed(path, [_tool_call_error("search")])
+    events = load_events(path)
+    genuine = events[0]
+    assert check_trajectory([genuine], tool_called("search", times=1)).passed
+
+    class _DictLookalike(dict):
+        pass
+
+    class _StrLookalike(str):
+        pass
+
+    subclass_dict = genuine.to_dict()
+    lookalike = type(genuine).from_dict(subclass_dict)
+    lookalike.metadata = _DictLookalike({"call_type": "tool_call"})
+    assert check_trajectory([lookalike], tool_called("search", minimum=0, maximum=0)).passed
+
+    lookalike2 = type(genuine).from_dict(subclass_dict)
+    lookalike2.metadata = {"_agent_cassette": {"call_type": _StrLookalike("tool_call")}}
+    assert check_trajectory([lookalike2], tool_called("search", minimum=0, maximum=0)).passed
+
+
+def test_consumed_events_include_success_and_error_after_exit(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    def ok(x):
+        return {"ok": x}
+
+    def boom(x):
+        raise ValueError("recorded failure")
+
+    with Cassette.record(path) as cassette:
+        wrap_tool(ok, cassette, name="ok")("1")
+        with pytest.raises(ValueError):
+            wrap_tool(boom, cassette, name="boom")("2")
+
+    forbidden_ran: list[str] = []
+
+    def forbidden(*args, **kwargs):
+        forbidden_ran.append("ran")
+        raise AssertionError("live body ran")
+
+    with Cassette.replay(path) as replayer:
+        wrap_tool(forbidden, replayer, name="ok")("1")
+        with pytest.raises(ValueError):
+            wrap_tool(forbidden, replayer, name="boom")("2")
+        assert replayer.remaining == 0
+
+    # consumed_events remains valid, ordered, and detached AFTER the context exits
+    consumed = replayer.consumed_events
+    assert [event.name for event in consumed] == ["ok", "boom"]
+    assert consumed[1].type is EventType.ERROR
+    report = check_trajectory(
+        consumed,
+        tool_called("ok", times=1),
+        tool_called("boom", times=1),  # the replayable ERROR counts as one call
+    )
+    assert report.passed
+    assert forbidden_ran == []
+    consumed[0].input["args"].append("MUTATED")
+    assert replayer.events[0].input["args"] == ["1"]
+
+
+def test_zero_live_strict_replay_across_tool_shapes(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    async def fetch(url):
+        return {"url": url}
+
+    def sync_stream(query):
+        yield query
+        yield query.upper()
+
+    async def async_stream(query):
+        yield query
+        yield query.upper()
+
+    async def record():
+        with Cassette.record(path) as cassette:
+            await wrap_tool(fetch, cassette, name="fetch")("u")
+            assert list(wrap_tool(sync_stream, cassette, name="sgen")("hi")) == ["hi", "HI"]
+            assert [
+                item async for item in wrap_tool(async_stream, cassette, name="agen")("yo")
+            ] == [
+                "yo",
+                "YO",
+            ]
+
+    asyncio.run(record())
+
+    live: list[str] = []
+
+    async def forbidden_async(*args, **kwargs):
+        live.append("ran")
+        raise AssertionError("live async body ran")
+
+    def forbidden_sync_stream(*args, **kwargs):
+        live.append("ran")
+        raise AssertionError("live sync generator ran")
+        yield  # pragma: no cover
+
+    async def forbidden_async_stream(*args, **kwargs):
+        live.append("ran")
+        raise AssertionError("live async generator ran")
+        yield  # pragma: no cover
+
+    async def replay():
+        with Cassette.replay(path, strict=True) as replayer:
+            assert await wrap_tool(forbidden_async, replayer, name="fetch")("u") == {"url": "u"}
+            assert list(wrap_tool(forbidden_sync_stream, replayer, name="sgen")("hi")) == [
+                "hi",
+                "HI",
+            ]
+            got = [
+                item
+                async for item in wrap_tool(forbidden_async_stream, replayer, name="agen")("yo")
+            ]
+            assert got == ["yo", "YO"]
+            assert replayer.remaining == 0
+            return check_trajectory(
+                replayer.consumed_events,
+                tool_called("fetch", times=1),
+                tool_called("sgen", times=1),
+                tool_called("agen", times=1),
+                tool_not_called("dangerous"),
+            )
+
+    report = asyncio.run(replay())
+    assert report.passed
+    assert live == []  # no live body or iteration on replay
+
+
 # --------------------------------------------------------------------------- #
 # End-to-end record -> replay, zero live tool execution
 # --------------------------------------------------------------------------- #
@@ -569,6 +753,37 @@ def test_cli_repeatable_and_deterministic_order(tmp_path, capsys):
         "PASS tool_called: tool 'search': expected at least 1 call(s); observed 1",
         "PASS tool_called: tool 'summarize': expected at least 1 call(s); observed 1",
         "PASS tool_not_called: tool 'delete': expected 0 call(s); observed 0",
+    ]
+
+
+def test_cli_preserves_interleaved_occurrence_order_after_require(tmp_path, capsys):
+    path = tmp_path / "c.jsonl"
+    _seed(path, [_tool_call("b"), _tool_call("d")])
+    status = cli.main(
+        [
+            "check",
+            str(path),
+            "--require",
+            "tool_call:b",
+            "--tool-not-called",
+            "a",
+            "--tool-called",
+            "b",
+            "--tool-not-called",
+            "c",
+            "--tool-called",
+            "d",
+        ]
+    )
+    assert status == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("PASS")]
+    # all --require checks first, then tool checks in exact command-line order
+    assert lines == [
+        "PASS contains_event: found matching event (type=tool_call, name=b)",
+        "PASS tool_not_called: tool 'a': expected 0 call(s); observed 0",
+        "PASS tool_called: tool 'b': expected at least 1 call(s); observed 1",
+        "PASS tool_not_called: tool 'c': expected 0 call(s); observed 0",
+        "PASS tool_called: tool 'd': expected at least 1 call(s); observed 1",
     ]
 
 

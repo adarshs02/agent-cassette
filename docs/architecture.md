@@ -18,7 +18,10 @@
 - **Failure injection** — deterministic exceptions, return values, latency, and rate
   limits.
 - **Trajectory tests + CI reports** — assert on events, cost, duration, and errors; diff
-  two runs.
+  two runs. `tool_called`/`tool_not_called` assert on recorded/consumed tool boundaries by
+  name, input, and count, and `Replayer.consumed_events` exposes what a replay session
+  actually consumed (in cassette order); these verify Agent Cassette boundaries, not
+  uninstrumented side effects.
 - **Secret redaction** before anything hits disk, plus a script-free HTML viewer.
 - **OpenTelemetry/OpenInference** JSON import and export.
 

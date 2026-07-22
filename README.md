@@ -44,6 +44,8 @@ Your code needs no changes — supported clients (OpenAI, Anthropic) are patched
 
 Tool calls replay too: wrap any Python tool with `wrap_tool`, and bridge OpenAI Agents `FunctionTool`s (`patch_openai_agents`) or registered LangChain tools (`wrap_langchain_tools`) so the agent loop replays deterministically without running the real tool body.
 
+Then verify the trajectory offline: `tool_called`/`tool_not_called` assert which recorded tool boundaries appeared (by name, input, and count), `Replayer.consumed_events` exposes exactly what a replay session consumed, and `agent-cassette check --tool-called/--tool-not-called` runs the name-only checks in CI. These inspect recorded/consumed Agent Cassette boundaries — the zero-live guarantee covers supported wrapped/bridged tools, not arbitrary uninstrumented side effects.
+
 ## Docs
 
 | Guide | What's in it |

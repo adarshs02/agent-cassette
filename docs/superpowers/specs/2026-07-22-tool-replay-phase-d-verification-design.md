@@ -1,7 +1,8 @@
 # Tool record/replay — Phase D design (offline tool-call assertions and verification UX)
 
 Status: **implemented-pending-review** (2026-07-22). Scope: **Phase D specification,
-implemented.** Base: accepted C2 head `2859726` on `release/1.1.0`. Implementation is committed
+implemented.** Base: accepted C2 head `2859726` on `release/1.1.0`, plus a correction commit
+enforcing exact-type validation and command-line CLI occurrence order. Implementation is committed
 on `release/1.1.0`; the exact base/head SHAs are in the coding-agent handoff report.
 
 Feature goal (all phases): replay a full agent loop without executing real tools. Phase D closes
@@ -49,10 +50,14 @@ exact strict copier (`serialize_recorded_value`) — tuples, subclasses, cycles,
 NaN/Inf, and non-`str`/key-subclass keys are rejected without rendering values. Expected and
 recorded inputs are normalized with `normalize_input(..., ignore_paths)` and compared with
 `inputs_match` using `exact`/`subset`/`normalized`/`fuzzy` and the threshold; `subset` means the
-expected value is a recursive subset of the recorded tool envelope. Factory validation: exact
-nonempty `str` name; `match` one of the four modes; `fuzzy_threshold` via the existing validator;
-`ignore_paths` an exact tuple of nonempty `str`; counts non-negative `int` (never `bool`); `times`
-mutually exclusive with `minimum`/`maximum`; `minimum <= maximum`. For `tool_called`, no count
+expected value is a recursive subset of the recorded tool envelope. Factory validation is
+exact-type (`type(x) is ...`, never `isinstance`, so a hostile `str` subclass name never reaches
+`name!r`): nonempty `str` name; `match` an exact `str` in the four modes; `fuzzy_threshold` via the
+existing validator; `ignore_paths` an exact tuple of exact nonempty `str`; counts exact
+non-negative `int` (never `bool`, `IntEnum`, or another `int` subclass); `times` mutually exclusive
+with `minimum`/`maximum`; `minimum <= maximum`. The replayable-ERROR boundary likewise requires an
+exact `dict` internal metadata object and an exact `str` `call_type == "tool_call"`, so mutated
+in-memory lookalike events are not counted. For `tool_called`, no count
 argument means minimum 1; `times` is exact; otherwise inclusive bounds (zero permitted).
 `tool_not_called` passes only when the match count is exactly zero.
 
@@ -65,12 +70,13 @@ creation, or a returned `consumed_events` payload, cannot alter the check or Rep
 ## 4. CLI
 
 `agent-cassette check` gains repeatable name-only `--tool-called NAME` / `--tool-not-called NAME`.
-Checks append in a deterministic, documented order — `--require`, then `--tool-called` (in order),
-then `--tool-not-called` (in order), then cost/duration. Empty names fail as CLI input (exit `2`),
-not a traceback. Including either option makes the command explicit, so `no_errors()` is not added
-implicitly unless `--no-errors` is also supplied. Existing exit codes and `--report-json` are
-preserved (failures exit `1`, invalid flags exit `2`). Structured-input and count assertions
-remain Python-only.
+Both families feed one ordered argparse destination (a small `argparse.Action` appending
+`(kind, name)`), so checks append in a deterministic order — every `--require` first, then each
+`--tool-called` / `--tool-not-called` occurrence in exact command-line order (interleaving is
+preserved), then cost/duration. Empty names fail as CLI input (exit `2`), not a traceback.
+Including either option makes the command explicit, so `no_errors()` is not added implicitly unless
+`--no-errors` is also supplied. Existing exit codes and `--report-json` are preserved (failures
+exit `1`, invalid flags exit `2`). Structured-input and count assertions remain Python-only.
 
 ## 5. Tests
 

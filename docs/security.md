@@ -24,6 +24,16 @@ Unknown recorded types become `RecordedCallError`. Provider and LangChain envelo
 use fixed decoder mappings. Registered migrations, adapters, executed CLI scripts,
 and live provider clients are trusted application code.
 
+Tool-boundary assertions (`tool_called`, `tool_not_called`) verify recorded/consumed
+Agent Cassette boundaries only; they do not prove the absence of uninstrumented side
+effects, and the zero-live-execution guarantee applies solely to supported
+wrapped/bridged tools (`wrap_tool`, `wrap_langchain_tools`, `patch_openai_agents`, MCP).
+An expected `with_input` is detached and validated through the same exact-type JSON
+copier as recorded values — subclasses, tuples, cycles, depth overflow, non-finite
+floats, and non-`str` keys are rejected without calling `str`/`repr`/conversion methods —
+and assertion messages and `details` carry only JSON-native diagnostics (tool name,
+counts, indexes), never a raw input/output payload.
+
 Project initialization statically inspects manifests and source evidence. It does
 not execute consumer code or discover credentials. Mutating setup uses no-follow,
 directory-relative operations and fail-closed rollback rules on supported POSIX

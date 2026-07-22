@@ -45,6 +45,22 @@ Time-travel replay, live continuation, and failure injection — see
 
 Trajectory reports for CI — see [Testing](testing.md#ci-reports).
 
+```bash
+agent-cassette check run.jsonl \
+  --require tool_call:search \
+  --tool-called search --tool-not-called send_email \
+  --max-cost 0.05 --report-json checks.json
+```
+
+`--tool-called NAME` / `--tool-not-called NAME` are repeatable name-only tool-boundary
+checks. Checks run in a fixed order — every `--require`, then each `--tool-called` /
+`--tool-not-called` in command-line order, then `--max-cost` / `--max-duration-ms`. An
+empty tool name is a usage error (exit `2`). Supplying any check makes the command
+explicit, so `no_errors()` is added only when you pass `--no-errors`. Structured-input
+and count assertions are Python-only (`tool_called(..., with_input=..., times=...)`).
+These checks inspect recorded/consumed Agent Cassette tool boundaries; they do not
+observe uninstrumented side effects.
+
 ## Other commands
 
 ```bash

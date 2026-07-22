@@ -252,12 +252,31 @@ def _is_tool_call_boundary(event: Event) -> bool:
         return True
     if event.type is EventType.ERROR:
         internal = event.metadata.get("_agent_cassette")
-        return isinstance(internal, dict) and internal.get("call_type") == "tool_call"
+        if type(internal) is not dict:
+            return False
+        call_type = internal.get("call_type")
+        return type(call_type) is str and call_type == "tool_call"
     return False
 
 
+_MATCH_MODES = ("exact", "subset", "normalized", "fuzzy")
+
+
+def _validate_name(label: str, name: str) -> None:
+    # Exact ``str`` only: a ``str`` subclass (e.g. a hostile ``__repr__``) must never
+    # reach ``name!r`` in a result message.
+    if type(name) is not str or not name:
+        raise ValueError(f"{label} requires a nonempty tool name")
+
+
+def _validate_match(match: MatchMode) -> None:
+    if type(match) is not str or match not in _MATCH_MODES:
+        raise ValueError("match must be one of exact, subset, normalized, fuzzy")
+
+
 def _validate_count(label: str, value: int | None) -> None:
-    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+    # Exact ``int`` only: reject ``bool``, ``IntEnum``, and any other ``int`` subclass.
+    if value is not None and (type(value) is not int or value < 0):
         raise ValueError(f"{label} must be a non-negative integer")
 
 
@@ -315,10 +334,8 @@ def tool_called(
     any input) is detached and strictly validated at creation, then matched with
     ``normalize_input``/``inputs_match`` exactly like the Replayer.
     """
-    if not isinstance(name, str) or not name:
-        raise ValueError("tool_called requires a nonempty tool name")
-    if match not in ("exact", "subset", "normalized", "fuzzy"):
-        raise ValueError("match must be one of exact, subset, normalized, fuzzy")
+    _validate_name("tool_called", name)
+    _validate_match(match)
     validate_fuzzy_threshold(fuzzy_threshold)
     _validate_ignore_paths(ignore_paths)
     _validate_count("times", times)
@@ -383,10 +400,8 @@ def tool_not_called(
     Same boundary and input-matching rules as :func:`tool_called`; passes only when the
     number of matches is exactly zero.
     """
-    if not isinstance(name, str) or not name:
-        raise ValueError("tool_not_called requires a nonempty tool name")
-    if match not in ("exact", "subset", "normalized", "fuzzy"):
-        raise ValueError("match must be one of exact, subset, normalized, fuzzy")
+    _validate_name("tool_not_called", name)
+    _validate_match(match)
     validate_fuzzy_threshold(fuzzy_threshold)
     _validate_ignore_paths(ignore_paths)
     input_filtered = with_input is not _ANY_INPUT
