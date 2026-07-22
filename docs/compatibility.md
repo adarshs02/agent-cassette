@@ -23,3 +23,14 @@ contract. Upper bounds prevent a new major SDK release from silently entering a
 previously validated environment. A release may narrow a range if a boundary cannot
 pass the full conformance gate; it must not broaden one without a new boundary test.
 
+## Phase D tool-replay assertions (1.1.0)
+
+The additive `tool_called` / `tool_not_called` predicates and the read-only
+`Replayer.consumed_events` property operate purely on schema-v1 core events. They add
+no dependency, change no provider or framework version range in the table above, and
+require no schema or `EventType` change. Their zero-live-execution substitution is
+guaranteed only at supported wrapped/bridged boundaries (`wrap_tool`,
+`wrap_langchain_tools`, `patch_openai_agents`, and MCP); uninstrumented side effects
+(arbitrary filesystem, subprocess, HTTP, database, or browser activity) are outside the
+contract and are neither replayed nor asserted on.
+

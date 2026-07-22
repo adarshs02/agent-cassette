@@ -544,10 +544,14 @@ def test_in_memory_lookalike_metadata_is_not_counted(tmp_path):
         pass
 
     subclass_dict = genuine.to_dict()
+    # A plain outer metadata dict whose _agent_cassette internal object is a dict
+    # *subclass*: exact-dict check must reject it. (This fails on the isinstance-based
+    # 80a2e8f, which would count it.)
     lookalike = type(genuine).from_dict(subclass_dict)
-    lookalike.metadata = _DictLookalike({"call_type": "tool_call"})
+    lookalike.metadata = {"_agent_cassette": _DictLookalike({"call_type": "tool_call"})}
     assert check_trajectory([lookalike], tool_called("search", minimum=0, maximum=0)).passed
 
+    # A plain nested structure whose call_type is a str *subclass*: exact-str check rejects it.
     lookalike2 = type(genuine).from_dict(subclass_dict)
     lookalike2.metadata = {"_agent_cassette": {"call_type": _StrLookalike("tool_call")}}
     assert check_trajectory([lookalike2], tool_called("search", minimum=0, maximum=0)).passed
