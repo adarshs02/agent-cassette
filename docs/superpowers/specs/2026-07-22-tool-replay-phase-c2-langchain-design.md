@@ -1,8 +1,8 @@
 # Tool record/replay — Phase C2 design (LangChain registered-tool bridge)
 
-Status: **implemented-pending-review** (2026-07-22; bridge-identity, async-fallback, and
-error-trust correction 2026-07-22). Scope: **Phase C2 specification, implemented.** Base:
-accepted C1 head `f6191003` on `release/1.1.0`. Implementation is
+Status: **implemented-pending-review** (2026-07-22; bridge-identity/async-fallback/error-trust
+correction, then default-`_arun` integrity correction). Scope: **Phase C2 specification,
+implemented.** Base: accepted C1 head `f6191003` on `release/1.1.0`. Implementation is
 committed on `release/1.1.0`; the exact base/head SHAs are recorded in the coding-agent
 handoff report (the spec is committed with the implementation, so its own commit hash
 cannot be embedded without invalidating it).
@@ -61,7 +61,14 @@ access (read only from the validated object's instance dict, never `getattr`), s
 attribute or hostile `__getattr__` on a non-tool cannot be reached. The marker is a private
 exact-type `_ToolBridgeState` (cassette + installed `_run`/optional `_arun` wrappers);
 same-cassette rewrap is idempotent only when the marker is that exact type **and** the clone
-still points at the installed wrappers, else it fails closed with `ValueError`. Public-method
+still points at the installed wrappers, else it fails closed with `ValueError`. The marker is
+an immutable frozen dataclass read via a private missing-sentinel (a `None`-valued marker is a
+rejected collision, not "absent"). Integrity supports both async shapes: an installed instance
+`_arun` wrapper is verified by identity; when the default-`_arun` path was chosen (a
+conventional tool inheriting `BaseTool._arun`, wrapped only at `_run`), rewrap requires `_arun`
+to be **absent** from the instance dict and the class to still resolve `_arun` to the fixed
+descriptor captured at install — closing the bypass where a post-bridge instance `_arun` would
+be resolved before the default offload and skip the wrapped `_run`. Public-method
 overrides are rejected by resolved-descriptor identity against the fixed `BaseTool`/`Tool`/
 `StructuredTool` descriptors (defeating `functools.wraps`/`__module__` spoofing). A `_arun`
 boundary is installed only for a genuinely custom/SDK async `_arun`; a conventional tool that

@@ -13,6 +13,7 @@ boundary (:func:`wrap_langchain`) and the observational
 from __future__ import annotations
 
 import functools
+from dataclasses import dataclass
 from types import MethodType
 from typing import Any, cast
 
@@ -32,15 +33,22 @@ _PUBLIC_METHODS = ("invoke", "ainvoke", "run", "arun")
 _VALID_RESPONSE_FORMATS = ("content", "content_and_artifact")
 
 
+_MISSING = object()  # private sentinel: distinguish an absent marker from a None collision
+
+
+@dataclass(frozen=True, slots=True)
 class _ToolBridgeState:
-    """Verifiable per-clone bridge marker (exact type, not a bare cassette ref)."""
+    """Immutable, verifiable per-clone bridge marker (exact type, not a bare cassette ref).
 
-    __slots__ = ("cassette", "run_wrapper", "arun_wrapper")
+    Exactly one of two async shapes holds: ``arun_wrapper`` is the installed instance
+    ``_arun`` wrapper, or it is ``None`` and ``default_arun`` is the fixed inherited
+    ``BaseTool._arun`` descriptor captured at install (with no instance ``_arun``).
+    """
 
-    def __init__(self, cassette: Any, run_wrapper: Any, arun_wrapper: Any) -> None:
-        self.cassette = cassette
-        self.run_wrapper = run_wrapper
-        self.arun_wrapper = arun_wrapper
+    cassette: Any
+    run_wrapper: Any
+    arun_wrapper: Any
+    default_arun: Any
 
 
 # --------------------------------------------------------------------------- #
@@ -186,6 +194,7 @@ def _install_tool_bridge(
     response_format: str,
     tool_exception_cls: type | None,
     install_arun: bool,
+    default_arun: Any,
 ) -> _ToolBridgeState:
     original_run = clone._run
     original_arun = clone._arun
@@ -250,7 +259,9 @@ def _install_tool_bridge(
         arun_bound = MethodType(arun_wrapper, clone)
         object.__setattr__(clone, "_arun", arun_bound)
 
-    return _ToolBridgeState(cassette, run_bound, arun_bound)
+    # When the default-_arun path was chosen, remember the fixed descriptor so a later
+    # instance _arun (or a class change) is detectable; otherwise there is no default.
+    return _ToolBridgeState(cassette, run_bound, arun_bound, None if install_arun else default_arun)
 
 
 def _bridge_one(
@@ -268,17 +279,28 @@ def _bridge_one(
         raise TypeError(
             f"tool at index {index} must be a LangChain BaseTool, got {type(tool).__name__}"
         )
-    # Read bridge state only from the validated object's instance dictionary.
-    state = vars(tool).get(_BRIDGE_STATE_ATTR)
-    if state is not None:
+    # Read bridge state only from the validated object's instance dictionary. Use a
+    # private sentinel so a marker attribute whose value is None is treated as a
+    # collision (rejected), not as "absent".
+    state = vars(tool).get(_BRIDGE_STATE_ATTR, _MISSING)
+    if state is not _MISSING:
         if type(state) is not _ToolBridgeState:
             raise ValueError("tool bridge marker was forged or collided with a foreign attribute")
         if state.cassette is not cassette:
             raise ValueError("tool is already bridged to a different cassette session")
         if vars(tool).get("_run") is not state.run_wrapper:
             raise ValueError("tool _run replay boundary was replaced")
-        if state.arun_wrapper is not None and vars(tool).get("_arun") is not state.arun_wrapper:
-            raise ValueError("tool _arun replay boundary was replaced")
+        if state.arun_wrapper is not None:
+            if vars(tool).get("_arun") is not state.arun_wrapper:
+                raise ValueError("tool _arun replay boundary was replaced")
+        else:
+            # Default-_arun path: an instance _arun must be absent (LangChain would
+            # resolve it before its default offload and bypass the wrapped _run), and
+            # the class must still resolve _arun to the fixed descriptor captured at install.
+            if "_arun" in vars(tool):
+                raise ValueError("tool _arun replay boundary was replaced")
+            if getattr(type(tool), "_arun", None) is not state.default_arun:
+                raise ValueError("tool _arun class descriptor changed after bridging")
         return tool  # idempotent same-cassette rewrap with intact boundary
     name = getattr(tool, "name", None)
     if type(name) is not str or not name:
@@ -307,10 +329,18 @@ def _bridge_one(
     # Only install an _arun boundary for a genuinely custom/SDK async implementation.
     # A conventional tool inheriting the default BaseTool._arun offloads through the
     # already-wrapped _run, so wrapping _arun too would double-record.
-    install_arun = getattr(tool_type, "_arun", None) is not getattr(base_tool_cls, "_arun", None)
+    default_arun = getattr(base_tool_cls, "_arun", None)
+    install_arun = getattr(tool_type, "_arun", None) is not default_arun
     event_name = f"{name_prefix}.{name}"
     state = _install_tool_bridge(
-        clone, cassette, event_name, name, response_format, tool_exception_cls, install_arun
+        clone,
+        cassette,
+        event_name,
+        name,
+        response_format,
+        tool_exception_cls,
+        install_arun,
+        default_arun,
     )
     object.__setattr__(clone, _BRIDGE_STATE_ATTR, state)
     return clone

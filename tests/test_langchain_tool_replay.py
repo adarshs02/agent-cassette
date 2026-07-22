@@ -927,3 +927,237 @@ def test_real_callback_lifecycle_counts(tmp_path):
         bridged.invoke({"query": "agents"}, config={"callbacks": [rep_cb]})
         assert replayer.remaining == 0
     assert (rep_cb.starts, rep_cb.ends) == (1, 1)  # callbacks run once on replay too
+
+
+# --------------------------------------------------------------------------- #
+# Phase C2 final correction — default _arun integrity + missing gates
+# --------------------------------------------------------------------------- #
+
+from types import MethodType  # noqa: E402
+
+
+def test_tampered_default_arun_rewrap_rejected():
+    # sync-only tool -> default _arun path (arun_wrapper None); an instance _arun
+    # installed after bridging must be rejected, not silently ignored.
+    cassette = object()
+    (clone,) = wrap_langchain_tools([_CustomSyncTool()], cassette)
+
+    async def evil(*args, **kwargs):
+        return "bypass"
+
+    object.__setattr__(clone, "_arun", MethodType(evil, clone))
+    with pytest.raises(ValueError, match="_arun"):
+        wrap_langchain_tools([clone], cassette)
+
+
+def test_tampered_installed_arun_rewrap_rejected():
+    cassette = object()
+
+    @tool
+    async def atool(query: str) -> str:
+        "a"
+        return query
+
+    (clone,) = wrap_langchain_tools([atool], cassette)  # async tool -> arun_wrapper installed
+
+    async def evil(*args, **kwargs):
+        return "bypass"
+
+    object.__setattr__(clone, "_arun", MethodType(evil, clone))
+    with pytest.raises(ValueError, match="_arun"):
+        wrap_langchain_tools([clone], cassette)
+
+
+def test_none_marker_collision_rejected():
+    tool_obj = _search([])
+    object.__setattr__(tool_obj, "_agent_cassette_tool_bridge", None)  # collision, not absence
+    with pytest.raises(ValueError, match="forged or collided"):
+        wrap_langchain_tools([tool_obj], object())
+
+
+def test_intact_idempotent_rewrap_both_async_shapes():
+    cassette = object()
+    (sync_clone,) = wrap_langchain_tools([_CustomSyncTool()], cassette)
+    assert wrap_langchain_tools([sync_clone], cassette)[0] is sync_clone
+
+    @tool
+    async def atool(query: str) -> str:
+        "a"
+        return query
+
+    (async_clone,) = wrap_langchain_tools([atool], cassette)
+    assert wrap_langchain_tools([async_clone], cassette)[0] is async_clone
+
+
+def test_fake_agent_loop_record_replay(tmp_path):
+    from langchain_core.messages import ToolMessage
+
+    path = tmp_path / "c.jsonl"
+
+    def run_loop(tools, forbidden):
+        by_name = {t.name: t for t in tools}
+        # fake model: one tool call, then a final answer built from the ToolMessage
+        tool_call = {
+            "name": "search",
+            "args": {"query": "agents"},
+            "id": "call_1",
+            "type": "tool_call",
+        }
+        message = by_name["search"].invoke(tool_call)
+        assert isinstance(message, ToolMessage)
+        return {"final": "answer:" + str(message.content), "messages": [message.content]}
+
+    calls: list[str] = []
+    with Cassette.record(path) as cassette:
+        rec = run_loop(wrap_langchain_tools([_search(calls)], cassette), forbidden=False)
+    assert calls == ["agents"]
+
+    replay_calls: list[str] = []
+    with Cassette.replay(path) as replayer:
+        rep = run_loop(
+            wrap_langchain_tools([_search(replay_calls, forbidden=True)], replayer), True
+        )
+        assert replayer.remaining == 0
+    assert rec == rep
+    assert replay_calls == []
+
+
+def test_sequential_abatch_record_replay(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    async def scenario():
+        calls: list[str] = []
+        with Cassette.record(path) as cassette:
+            (bridged,) = wrap_langchain_tools([_async_search(calls)], cassette)
+            rec = await bridged.abatch(
+                [{"query": "a"}, {"query": "b"}], config={"max_concurrency": 1}
+            )
+        with Cassette.replay(path, strict=False) as replayer:
+            (bridged,) = wrap_langchain_tools([_async_search([], forbidden=True)], replayer)
+            rep = await bridged.abatch(
+                [{"query": "a"}, {"query": "b"}], config={"max_concurrency": 1}
+            )
+            assert replayer.remaining == 0
+        return rec, rep
+
+    rec, rep = asyncio.run(scenario())
+    assert rec == rep == ["async:a", "async:b"]
+
+
+def test_coexists_with_langchain_callback_handler(tmp_path):
+    from agent_cassette import langchain_callback_handler
+
+    path = tmp_path / "c.jsonl"
+    calls: list[str] = []
+    with Cassette.record(path) as cassette:
+        handler = langchain_callback_handler(cassette)
+        (bridged,) = wrap_langchain_tools([_search(calls)], cassette)
+        bridged.invoke({"query": "agents"}, config={"callbacks": [handler]})
+
+    events = load_events(path)
+    # the bridged TOOL_CALL is replayable; any observational callback event is marked
+    bridged_events = [e for e in events if e.metadata.get("tool_bridge")]
+    assert len(bridged_events) == 1
+    observational = [
+        e for e in events if e.metadata.get("_agent_cassette", {}).get("observational") is True
+    ]
+    # observational events (if the handler emitted any) are filtered from strict replay
+    with Cassette.replay(path) as replayer:
+        assert replayer.remaining == len(events) - len(observational)
+        (bridged,) = wrap_langchain_tools([_search([], forbidden=True)], replayer)
+        bridged.invoke({"query": "agents"})
+        assert replayer.remaining == 0
+
+
+def test_invalid_output_persists_no_success_event(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    @tool
+    def bad(query: str):
+        "returns a tuple, which is not JSON-native for a content tool"
+        return (1, 2)
+
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([bad], cassette)
+        with pytest.raises(StrictJSONError):
+            bridged.invoke({"query": "x"})
+
+    events = load_events(path)
+    assert not any(e.type == EventType.TOOL_CALL and e.metadata.get("tool_bridge") for e in events)
+    # nor a replayable error event
+    assert not any(e.type == EventType.ERROR for e in events)
+
+
+def test_artifact_result_detached_from_loaded_event(tmp_path):
+    path = tmp_path / "c.jsonl"
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([_artifact_tool([])], cassette)
+        bridged.invoke({"args": {"query": "x"}, "type": "tool_call", "id": "1", "name": "build"})
+    with Cassette.replay(path) as replayer:
+        (bridged,) = wrap_langchain_tools([_artifact_tool([], forbidden=True)], replayer)
+        message = bridged.invoke(
+            {"args": {"query": "x"}, "type": "tool_call", "id": "1", "name": "build"}
+        )
+        message.artifact["artifact"].append("MUTATED")
+        stored = replayer.events[0].output["value"]  # [content, artifact]
+        assert stored[1] == {"artifact": [1, 2, 3]}
+
+
+@pytest.mark.parametrize(
+    "bad_return,response_format",
+    [
+        ((1, 2), "content"),  # tuple not JSON-native for content
+        (["only-one"], "content_and_artifact"),  # wrong tuple shape
+        (("c", {"a": 1}, "extra"), "content_and_artifact"),  # 3-tuple
+        (float("nan"), "content"),
+        (_Grade(3), "content"),
+    ],
+)
+def test_encode_invalid_results_rejected(bad_return, response_format):
+    with pytest.raises(StrictJSONError):
+        _encode_tool_result(bad_return, response_format)
+
+
+def test_encode_cyclic_and_deep_content_rejected():
+    cycle: list[Any] = []
+    cycle.append(cycle)
+    with pytest.raises(StrictJSONError):
+        _encode_tool_result(cycle, "content")
+    deep: Any = 1
+    for _ in range(100):
+        deep = [deep]
+    with pytest.raises(StrictJSONError):
+        _encode_tool_result(deep, "content")
+
+
+def test_config_captured_and_cleaned_in_request(tmp_path):
+    path = tmp_path / "c.jsonl"
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([_search([])], cassette)
+        bridged.invoke({"query": "x"}, config={"tags": ["t"], "metadata": {"k": 1}})
+    request = load_events(path)[0].input
+    # Volatile keys (callbacks/run_id/run_name) are dropped; behaviour keys retained.
+    assert request["config"].get("tags") == ["t"]
+    assert request["config"].get("metadata") == {"k": 1}
+    assert "callbacks" not in request["config"]
+    assert "run_id" not in request["config"]
+
+
+def test_custom_basetool_run_manager_injection(tmp_path):
+    # A conventional custom BaseTool declaring run_manager still gets it injected
+    # through the wrapper's preserved signature.
+    path = tmp_path / "c.jsonl"
+    seen: dict[str, Any] = {}
+
+    class _RunManagerTool(BaseTool):
+        name: str = "rm"
+        description: str = "d"
+
+        def _run(self, query: str, run_manager: Any = None, **kwargs: Any) -> str:
+            seen["run_manager"] = run_manager is not None
+            return "rm:" + query
+
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([_RunManagerTool()], cassette)
+        bridged.invoke({"query": "x"})
+    assert seen["run_manager"] is True
