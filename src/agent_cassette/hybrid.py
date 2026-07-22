@@ -321,6 +321,7 @@ class Hybrid(_ToolSessionMixin):
         metadata: dict[str, Any] | None = None,
         cost: float | None = None,
         serializer: Callable[[Result], Any] | None = None,
+        error_serializer: Callable[[BaseException], Any] | None = None,
     ) -> Result:
         """Replay, inject, or execute one synchronous call and record the outcome."""
         normalized_type = self._event_type(event_type)
@@ -359,6 +360,7 @@ class Hybrid(_ToolSessionMixin):
                 metadata=injection_metadata,
                 cost=cost,
                 serializer=serializer,
+                error_serializer=error_serializer,
             )
 
         replayed = self._try_replay(normalized_type, name, input)
@@ -373,6 +375,7 @@ class Hybrid(_ToolSessionMixin):
             metadata=self._metadata(metadata, mode="live"),
             cost=cost,
             serializer=serializer,
+            error_serializer=error_serializer,
         )
 
     async def acall(
@@ -385,6 +388,7 @@ class Hybrid(_ToolSessionMixin):
         metadata: dict[str, Any] | None = None,
         cost: float | None = None,
         serializer: Callable[[Result], Any] | None = None,
+        error_serializer: Callable[[BaseException], Any] | None = None,
     ) -> Result:
         """Replay, inject, or execute one asynchronous call and record the outcome."""
         normalized_type = self._event_type(event_type)
@@ -423,6 +427,7 @@ class Hybrid(_ToolSessionMixin):
                 metadata=injection_metadata,
                 cost=cost,
                 serializer=serializer,
+                error_serializer=error_serializer,
             )
 
         replayed = self._try_replay(normalized_type, name, input)
@@ -437,6 +442,7 @@ class Hybrid(_ToolSessionMixin):
             metadata=self._metadata(metadata, mode="live"),
             cost=cost,
             serializer=serializer,
+            error_serializer=error_serializer,
         )
 
     def save(self) -> None:

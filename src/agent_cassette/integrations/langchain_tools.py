@@ -23,10 +23,24 @@ from agent_cassette.replay import RecordedCallError
 
 _TOOL_RESULT_MARKER = "__agent_cassette_langchain_tool_result__"
 _TOOL_RESULT_VERSION = 1
+# Unique code-owned recorded-error marker so a user exception merely *named*
+# ``ToolException`` is never reconstructed as LangChain's fixed class.
+_TOOL_EXCEPTION_MARKER = "AgentCassetteLangChainToolExceptionV1"
 _OMITTED_CONFIG_KEYS = frozenset({"callbacks", "run_id", "run_name"})
-_BRIDGE_CASSETTE_ATTR = "_agent_cassette_tool_bridge"
+_BRIDGE_STATE_ATTR = "_agent_cassette_tool_bridge"
 _PUBLIC_METHODS = ("invoke", "ainvoke", "run", "arun")
 _VALID_RESPONSE_FORMATS = ("content", "content_and_artifact")
+
+
+class _ToolBridgeState:
+    """Verifiable per-clone bridge marker (exact type, not a bare cassette ref)."""
+
+    __slots__ = ("cassette", "run_wrapper", "arun_wrapper")
+
+    def __init__(self, cassette: Any, run_wrapper: Any, arun_wrapper: Any) -> None:
+        self.cassette = cassette
+        self.run_wrapper = run_wrapper
+        self.arun_wrapper = arun_wrapper
 
 
 # --------------------------------------------------------------------------- #
@@ -39,11 +53,18 @@ def _clean_config(config: Any) -> Any:
         return None
     if type(config) is not dict:
         raise StrictJSONError("langchain tool config must be a plain dict or None")
-    # Drop only the volatile top-level keys; retain tags, metadata, configurable, etc.
+    # Validate every key is an exact str BEFORE membership filtering, so a str
+    # subclass named callbacks/run_id/run_name cannot silently disappear.
+    for key in config:
+        if type(key) is not str:
+            raise StrictJSONError("langchain tool config keys must be exact strings")
     return {key: value for key, value in config.items() if key not in _OMITTED_CONFIG_KEYS}
 
 
 def _build_request(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    for key in kwargs:
+        if type(key) is not str:
+            raise StrictJSONError("langchain tool kwargs keys must be exact strings")
     match_kwargs = {
         key: value for key, value in kwargs.items() if key not in ("run_manager", "config")
     }
@@ -91,20 +112,23 @@ def _encode_tool_result(value: Any, response_format: str) -> dict[str, Any]:
 
 
 def _decode_tool_result(recorded: Any, response_format: str) -> Any:
-    # A Hybrid Return injection may hand back a raw two-tuple (artifact tool) directly.
+    # The only value that is not strict-copied first is the explicitly supported
+    # raw exact-tuple Hybrid artifact injection (tuples are not JSON-native).
     if type(recorded) is tuple:
         if response_format != "content_and_artifact" or len(recorded) != 2:
             raise StrictJSONError("injected tuple does not match the tool response format")
         return (serialize_recorded_value(recorded[0]), serialize_recorded_value(recorded[1]))
-    if type(recorded) is dict and _TOOL_RESULT_MARKER in recorded:
-        detached = serialize_recorded_value(recorded)
+    # Strict-copy the whole value before any marker/key lookup so membership never
+    # touches hostile or key-subclass data.
+    detached = serialize_recorded_value(recorded)
+    if type(detached) is dict and _TOOL_RESULT_MARKER in detached:
         if detached.get(_TOOL_RESULT_MARKER) is not True:
             raise StrictJSONError("langchain tool result marker is invalid")
         version = detached.get("version")
         if type(version) is not int or version != _TOOL_RESULT_VERSION:
             raise StrictJSONError("langchain tool result has an unsupported version")
         kind = detached.get("kind")
-        if kind not in ("json", "content_and_artifact"):
+        if type(kind) is not str or kind not in ("json", "content_and_artifact"):
             raise StrictJSONError("langchain tool result kind is invalid")
         if set(detached) != {_TOOL_RESULT_MARKER, "version", "kind", "value"}:
             raise StrictJSONError("langchain tool result envelope has unexpected keys")
@@ -120,16 +144,31 @@ def _decode_tool_result(recorded: Any, response_format: str) -> Any:
         return (value[0], value[1])
     # A Hybrid Return injection may hand back a raw JSON value for a content tool.
     if response_format == "content":
-        return serialize_recorded_value(recorded)
+        return detached
     raise StrictJSONError("a content_and_artifact tool requires a 2-tuple or marked envelope")
+
+
+def _make_error_serializer(tool_exception_cls: type | None) -> Any:
+    def serialize(error: BaseException) -> dict[str, Any]:
+        if tool_exception_cls is not None and isinstance(error, tool_exception_cls):
+            # Emit a unique code-owned marker plus the real class name so the
+            # dedup check works and only *this* exact SDK ToolException translates back.
+            return {
+                "type": _TOOL_EXCEPTION_MARKER,
+                "message": str(error),
+                "original_type": type(error).__name__,
+            }
+        return {"type": type(error).__name__, "message": str(error)}
+
+    return serialize
 
 
 def _translate_replayed_error(
     error: RecordedCallError, tool_exception_cls: type | None
 ) -> BaseException:
-    # Only the exact recorded ToolException is translated back so LangChain's
-    # handle_tool_error can run again; never a module-qualified/lookalike name.
-    if tool_exception_cls is not None and error.recorded_type == "ToolException":
+    # Translate only the unique code-owned marker, never the ambiguous name
+    # "ToolException" (a user lookalike stays a RecordedCallError).
+    if tool_exception_cls is not None and error.recorded_type == _TOOL_EXCEPTION_MARKER:
         return tool_exception_cls(error.recorded_message)
     return error
 
@@ -146,9 +185,11 @@ def _install_tool_bridge(
     tool_name: str,
     response_format: str,
     tool_exception_cls: type | None,
-) -> None:
+    install_arun: bool,
+) -> _ToolBridgeState:
     original_run = clone._run
     original_arun = clone._arun
+    error_serializer = _make_error_serializer(tool_exception_cls)
 
     @functools.wraps(original_run)
     def run_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
@@ -167,6 +208,7 @@ def _install_tool_bridge(
                 live,
                 metadata=_tool_metadata(tool_name),
                 serializer=lambda value: _encode_tool_result(value, response_format),
+                error_serializer=error_serializer,
             )
         except RecordedCallError as error:
             raise _translate_replayed_error(error, tool_exception_cls) from None
@@ -174,38 +216,41 @@ def _install_tool_bridge(
             return result
         return _decode_tool_result(result, response_format)
 
-    @functools.wraps(original_arun)
-    async def arun_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        request = _build_request(args, kwargs)
-        executed = {"live": False}
+    run_bound = MethodType(run_wrapper, clone)
+    object.__setattr__(clone, "_run", run_bound)
 
-        async def live() -> Any:
-            executed["live"] = True
-            return await original_arun(*args, **kwargs)
+    arun_bound: Any = None
+    if install_arun:
 
-        try:
-            result = await cassette.acall(
-                EventType.TOOL_CALL,
-                event_name,
-                request,
-                live,
-                metadata=_tool_metadata(tool_name),
-                serializer=lambda value: _encode_tool_result(value, response_format),
-            )
-        except RecordedCallError as error:
-            raise _translate_replayed_error(error, tool_exception_cls) from None
-        if executed["live"]:
-            return result
-        return _decode_tool_result(result, response_format)
+        @functools.wraps(original_arun)
+        async def arun_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            request = _build_request(args, kwargs)
+            executed = {"live": False}
 
-    object.__setattr__(clone, "_run", MethodType(run_wrapper, clone))
-    object.__setattr__(clone, "_arun", MethodType(arun_wrapper, clone))
+            async def live() -> Any:
+                executed["live"] = True
+                return await original_arun(*args, **kwargs)
 
+            try:
+                result = await cassette.acall(
+                    EventType.TOOL_CALL,
+                    event_name,
+                    request,
+                    live,
+                    metadata=_tool_metadata(tool_name),
+                    serializer=lambda value: _encode_tool_result(value, response_format),
+                    error_serializer=error_serializer,
+                )
+            except RecordedCallError as error:
+                raise _translate_replayed_error(error, tool_exception_cls) from None
+            if executed["live"]:
+                return result
+            return _decode_tool_result(result, response_format)
 
-def _defining_module(cls: type, method: str) -> str:
-    func = getattr(cls, method, None)
-    func = getattr(func, "__func__", func)
-    return getattr(func, "__module__", "") or ""
+        arun_bound = MethodType(arun_wrapper, clone)
+        object.__setattr__(clone, "_arun", arun_bound)
+
+    return _ToolBridgeState(cassette, run_bound, arun_bound)
 
 
 def _bridge_one(
@@ -214,31 +259,42 @@ def _bridge_one(
     cassette: Any,
     name_prefix: str,
     base_tool_cls: type,
+    fixed_classes: tuple[type, ...],
     tool_exception_cls: type | None,
 ) -> Any:
-    existing = getattr(tool, _BRIDGE_CASSETTE_ATTR, None)
-    if existing is not None:
-        # Idempotent same-cassette rewrap; a different cassette must not nest boundaries.
-        if existing is cassette:
-            return tool
-        raise ValueError("tool is already bridged to a different cassette session")
+    # Validate the fixed-class BaseTool BEFORE any marker access, so a forged
+    # attribute or hostile __getattr__ on a non-tool cannot be reached.
     if not isinstance(tool, base_tool_cls):
         raise TypeError(
             f"tool at index {index} must be a LangChain BaseTool, got {type(tool).__name__}"
         )
+    # Read bridge state only from the validated object's instance dictionary.
+    state = vars(tool).get(_BRIDGE_STATE_ATTR)
+    if state is not None:
+        if type(state) is not _ToolBridgeState:
+            raise ValueError("tool bridge marker was forged or collided with a foreign attribute")
+        if state.cassette is not cassette:
+            raise ValueError("tool is already bridged to a different cassette session")
+        if vars(tool).get("_run") is not state.run_wrapper:
+            raise ValueError("tool _run replay boundary was replaced")
+        if state.arun_wrapper is not None and vars(tool).get("_arun") is not state.arun_wrapper:
+            raise ValueError("tool _arun replay boundary was replaced")
+        return tool  # idempotent same-cassette rewrap with intact boundary
     name = getattr(tool, "name", None)
     if type(name) is not str or not name:
         raise TypeError(f"tool at index {index} has an invalid name of type {type(name).__name__}")
+    tool_type = type(tool)
+    # Reject public-method overrides by resolved-descriptor identity (defeats
+    # functools.wraps and __module__ spoofing): each resolved method must be one
+    # of the fixed installed SDK descriptors.
     for method in _PUBLIC_METHODS:
-        module = _defining_module(type(tool), method)
-        if not (module == "langchain_core" or module.startswith("langchain_core.")):
+        resolved = getattr(tool_type, method, None)
+        if resolved not in {getattr(cls, method, None) for cls in fixed_classes}:
             raise TypeError(
                 f"tool at index {index} overrides the public {method!r} method "
-                f"({type(tool).__name__}); custom public-method overrides are not supported"
+                f"({tool_type.__name__}); custom public-method overrides are not supported"
             )
     response_format = getattr(tool, "response_format", "content")
-    # Guard the type before membership/formatting so a hostile object's __eq__/__repr__
-    # can never run here (or, being closed over, on the replay hot path).
     if type(response_format) is not str or response_format not in _VALID_RESPONSE_FORMATS:
         raise ValueError(
             f"tool at index {index} has an unsupported response_format of type "
@@ -246,11 +302,17 @@ def _bridge_one(
         )
     # Clone through the fixed SDK implementation, never a user-overridden model_copy.
     clone = cast(Any, base_tool_cls).model_copy(tool, deep=False)
-    if clone is tool or type(clone) is not type(tool):
+    if clone is tool or type(clone) is not tool_type:
         raise RuntimeError("BaseTool.model_copy did not return a distinct same-type clone")
+    # Only install an _arun boundary for a genuinely custom/SDK async implementation.
+    # A conventional tool inheriting the default BaseTool._arun offloads through the
+    # already-wrapped _run, so wrapping _arun too would double-record.
+    install_arun = getattr(tool_type, "_arun", None) is not getattr(base_tool_cls, "_arun", None)
     event_name = f"{name_prefix}.{name}"
-    _install_tool_bridge(clone, cassette, event_name, name, response_format, tool_exception_cls)
-    object.__setattr__(clone, _BRIDGE_CASSETTE_ATTR, cassette)
+    state = _install_tool_bridge(
+        clone, cassette, event_name, name, response_format, tool_exception_cls, install_arun
+    )
+    object.__setattr__(clone, _BRIDGE_STATE_ATTR, state)
     return clone
 
 
@@ -258,7 +320,9 @@ def wrap_langchain_tools(
     tools: Any, cassette: Any, *, name_prefix: str = "langchain.tool"
 ) -> list[Any]:
     """Return bridged shallow clones of installed LangChain ``BaseTool`` objects."""
-    from langchain_core.tools import BaseTool
+    from langchain_core.tools import BaseTool, StructuredTool, Tool
+
+    fixed_classes = (BaseTool, Tool, StructuredTool)
 
     tool_exception_cls: type | None
     try:
@@ -282,7 +346,9 @@ def wrap_langchain_tools(
             # Preserve duplicate identity: the same original yields the same clone.
             bridged.append(by_identity[id(tool)])
             continue
-        clone = _bridge_one(tool, index, cassette, name_prefix, BaseTool, tool_exception_cls)
+        clone = _bridge_one(
+            tool, index, cassette, name_prefix, BaseTool, fixed_classes, tool_exception_cls
+        )
         by_identity[id(tool)] = clone
         bridged.append(clone)
     return bridged

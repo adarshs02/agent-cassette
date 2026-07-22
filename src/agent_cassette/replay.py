@@ -100,6 +100,7 @@ class Replayer(_ToolSessionMixin):
         metadata: dict[str, Any] | None = None,
         cost: float | None = None,
         serializer: Callable[[Any], Any] | None = None,
+        error_serializer: Callable[[BaseException], Any] | None = None,
     ) -> Any:
         """Match the next call and return its recorded output without calling live code."""
         event = self.consume(event_type, name, input)
@@ -146,6 +147,7 @@ class Replayer(_ToolSessionMixin):
         metadata: dict[str, Any] | None = None,
         cost: float | None = None,
         serializer: Callable[[Any], Any] | None = None,
+        error_serializer: Callable[[BaseException], Any] | None = None,
     ) -> Any:
         """Match an async call and return its recorded output without awaiting live code."""
         return self.call(

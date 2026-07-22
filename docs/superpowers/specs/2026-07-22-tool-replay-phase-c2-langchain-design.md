@@ -1,7 +1,8 @@
 # Tool record/replay — Phase C2 design (LangChain registered-tool bridge)
 
-Status: **implemented-pending-review** (2026-07-22). Scope: **Phase C2 specification,
-implemented.** Base: accepted C1 head `f6191003` on `release/1.1.0`. Implementation is
+Status: **implemented-pending-review** (2026-07-22; bridge-identity, async-fallback, and
+error-trust correction 2026-07-22). Scope: **Phase C2 specification, implemented.** Base:
+accepted C1 head `f6191003` on `release/1.1.0`. Implementation is
 committed on `release/1.1.0`; the exact base/head SHAs are recorded in the coding-agent
 handoff report (the spec is committed with the implementation, so its own commit hash
 cannot be embedded without invalidating it).
@@ -52,7 +53,20 @@ and `ToolException` resolve only after the wrapper is called. Requirements:
   `config`/`run_manager` for LangChain's injection.
 - Duplicate identity is preserved (the same original yields the same clone). A bridged clone
   is privately marked; same-cassette rewrap is idempotent, different-cassette raises
-  `ValueError`. `response_format` must be exactly `content` or `content_and_artifact`.
+  `ValueError`. `response_format` must be an exact `str` equal to `content` or
+  `content_and_artifact` (type-guarded so a hostile object's dunders never run).
+
+Correction hardening: the `BaseTool` `isinstance` check runs **before** any bridge-marker
+access (read only from the validated object's instance dict, never `getattr`), so a forged
+attribute or hostile `__getattr__` on a non-tool cannot be reached. The marker is a private
+exact-type `_ToolBridgeState` (cassette + installed `_run`/optional `_arun` wrappers);
+same-cassette rewrap is idempotent only when the marker is that exact type **and** the clone
+still points at the installed wrappers, else it fails closed with `ValueError`. Public-method
+overrides are rejected by resolved-descriptor identity against the fixed `BaseTool`/`Tool`/
+`StructuredTool` descriptors (defeating `functools.wraps`/`__module__` spoofing). A `_arun`
+boundary is installed only for a genuinely custom/SDK async `_arun`; a conventional tool that
+inherits the default `BaseTool._arun` (which offloads through the wrapped `_run`) records a
+single event.
 
 No context manager or restoration is needed — originals are untouched and the clones remain
 bound to the supplied cassette session (execute only while it is open).
@@ -117,12 +131,20 @@ formatting still works from a JSON content value or the restored artifact tuple.
 Ordinary exceptions use the existing Recorder/Replayer ERROR path with
 `_agent_cassette.call_type == "tool_call"`; the safe allowlist replays directly, others become
 `RecordedCallError`, and no error class is imported by name. The fixed installed
-`ToolException` resolves at wrap time; on replay a `RecordedCallError` with
-`recorded_type == "ToolException"` is translated to `ToolException(message) from None` so
-`handle_tool_error` runs again. `CancelledError`/`KeyboardInterrupt`/`SystemExit` are not
-replayable (the Phase A limit). User callbacks receive one normal lifecycle on record and
-replay; the bridge synthesizes none. Hybrid replay-prefix-then-live and `Return`/`Raise`/
-`Delay` target `event_type="tool_call"` and the bridged event name.
+`ToolException` resolves at wrap time. To disambiguate it from a user exception merely *named*
+`ToolException`, C2 passes an internal `error_serializer` to `call`/`acall` (an additive
+keyword now on `Recorder`/`Replayer`/`Hybrid`: Recorder builds the ERROR payload with it and
+re-raises the original exception unchanged; Replayer ignores it; Hybrid forwards it for live
+and injected failures). For an `isinstance(error, captured_ToolException)` it emits a unique
+code-owned recorded type `AgentCassetteLangChainToolExceptionV1`, the safe message, and an
+`original_type` field; `Recorder._already_recorded` matches `original_type` so an escaping SDK
+tool error is not duplicated as `uncaught_exception`. On replay only that unique marker is
+translated back to the fixed `ToolException` `from None` (so `handle_tool_error` runs again) —
+the ambiguous name `"ToolException"` is never translated, so a lookalike stays a
+`RecordedCallError`. `CancelledError`/`KeyboardInterrupt`/`SystemExit` are not replayable (the
+Phase A limit). User callbacks receive one normal lifecycle on record and replay; the bridge
+synthesizes none. Hybrid replay-prefix-then-live and `Return`/`Raise`/`Delay` (including
+`Raise(ToolException(...))`) target `event_type="tool_call"` and the bridged event name.
 
 Orchestration tools whose body invokes another cassette-instrumented tool/agent are not
 bridged (their inner event precedes the outer result; skipping the outer body would consume

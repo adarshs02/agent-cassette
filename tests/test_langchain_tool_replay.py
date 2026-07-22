@@ -28,6 +28,7 @@ from agent_cassette import (  # noqa: E402
     InjectionRule,
     Raise,
     RecordedCallError,
+    ReplayMismatchError,
     Return,
     wrap_langchain_tools,
 )
@@ -681,3 +682,248 @@ def test_core_import_does_not_import_langchain_core():
     )
     assert result.returncode == 0, result.stderr
     assert "ok" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# Phase C2 correction — bridge identity, async fallback, error trust
+# --------------------------------------------------------------------------- #
+
+import functools  # noqa: E402
+
+
+def test_forged_non_tool_rejected_without_getattr_or_marker_access():
+    class _Forged:
+        _agent_cassette_tool_bridge = "forged"
+
+        def __getattr__(self, name):  # pragma: no cover - must never run
+            raise AssertionError(f"__getattr__ ran: {name}")
+
+    with pytest.raises(TypeError):
+        wrap_langchain_tools([_Forged()], object())
+
+
+def test_tampered_clone_rewrap_rejected():
+    cassette = object()
+    (clone,) = wrap_langchain_tools([_search([])], cassette)
+    object.__setattr__(clone, "_run", lambda *a, **k: "tampered")  # replace the boundary
+    with pytest.raises(ValueError, match="boundary was replaced"):
+        wrap_langchain_tools([clone], cassette)
+
+
+def test_forged_wrong_type_marker_rejected():
+    tool_obj = _search([])
+    object.__setattr__(tool_obj, "_agent_cassette_tool_bridge", "not-a-state")
+    with pytest.raises(ValueError, match="forged or collided"):
+        wrap_langchain_tools([tool_obj], object())
+
+
+def test_spoofed_public_override_rejected():
+    class _Spoofed(BaseTool):
+        name: str = "spoof"
+        description: str = "d"
+
+        def _run(self, query: str, **kwargs: Any) -> str:
+            return query
+
+        @functools.wraps(BaseTool.invoke)  # copies __module__/__wrapped__ from the SDK
+        def invoke(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+            return "bypassed"
+
+    with pytest.raises(TypeError, match="public"):
+        wrap_langchain_tools([_Spoofed()], object())
+
+
+class _StrKey(str):
+    pass
+
+
+def test_config_and_kwargs_key_subclass_rejected():
+    with pytest.raises(StrictJSONError):
+        _clean_config({_StrKey("callbacks"): 1})
+    with pytest.raises(StrictJSONError):
+        _build_request((), {_StrKey("query"): 1})
+
+
+_CUSTOM_STATE: dict[str, Any] = {"calls": [], "forbidden": False}
+
+
+class _CustomSyncTool(BaseTool):
+    name: str = "custom_sync"
+    description: str = "d"
+
+    def _run(self, query: str, run_manager: Any = None, **kwargs: Any) -> str:
+        _CUSTOM_STATE["calls"].append(query)
+        # A declared run_manager must still be injected through the wrapper's signature.
+        _CUSTOM_STATE["got_run_manager"] = run_manager is not None
+        if _CUSTOM_STATE["forbidden"]:
+            raise AssertionError("live custom tool executed during replay")
+        return "custom:" + query
+
+
+def test_custom_sync_tool_ainvoke_one_event_zero_live(tmp_path):
+    path = tmp_path / "c.jsonl"
+    _CUSTOM_STATE["calls"] = []
+    _CUSTOM_STATE["forbidden"] = False
+
+    async def scenario():
+        with Cassette.record(path) as cassette:
+            (bridged,) = wrap_langchain_tools([_CustomSyncTool()], cassette)
+            rec = await bridged.ainvoke({"query": "agents"})  # async fallback into sync _run
+        assert _CUSTOM_STATE["got_run_manager"] is True  # signature-driven injection preserved
+        # exactly one event: no inner+outer double record
+        assert len([e for e in load_events(path) if e.type == EventType.TOOL_CALL]) == 1
+        _CUSTOM_STATE["forbidden"] = True
+        with Cassette.replay(path) as replayer:
+            (bridged,) = wrap_langchain_tools([_CustomSyncTool()], replayer)
+            rep = await bridged.ainvoke({"query": "agents"})
+            assert replayer.remaining == 0
+        return rec, rep
+
+    rec, rep = asyncio.run(scenario())
+    assert rec == rep == "custom:agents"
+
+
+def test_lookalike_tool_exception_stays_recorded_call_error(tmp_path):
+    path = tmp_path / "c.jsonl"
+
+    class ToolException(Exception):  # user lookalike, NOT the SDK class
+        pass
+
+    @tool
+    def boom(query: str) -> str:
+        "boom"
+        raise ToolException("lookalike")
+
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([boom], cassette)
+        with pytest.raises(ToolException):
+            bridged.invoke({"query": "x"})
+
+    with Cassette.replay(path) as replayer:
+        (bridged,) = wrap_langchain_tools([boom], replayer)
+        with pytest.raises(RecordedCallError):  # not reconstructed as the SDK ToolException
+            bridged.invoke({"query": "x"})
+
+
+def test_two_turn_loop_zero_live_all_consumed(tmp_path):
+    path = tmp_path / "c.jsonl"
+    calls: list[str] = []
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([_search(calls)], cassette)
+        first = bridged.invoke({"query": "a"})
+        second = bridged.invoke({"query": "b"})
+    assert calls == ["a", "b"]
+
+    replay_calls: list[str] = []
+    with Cassette.replay(path) as replayer:
+        (bridged,) = wrap_langchain_tools([_search(replay_calls, forbidden=True)], replayer)
+        rfirst = bridged.invoke({"query": "a"})
+        rsecond = bridged.invoke({"query": "b"})
+        assert replayer.remaining == 0
+    assert (first, second) == (rfirst, rsecond) == ("result:a", "result:b")
+    assert replay_calls == []
+
+
+def test_sequential_batch_record_replay(tmp_path):
+    path = tmp_path / "c.jsonl"
+    calls: list[str] = []
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([_search(calls)], cassette)
+        rec = bridged.batch([{"query": "a"}, {"query": "b"}], config={"max_concurrency": 1})
+    assert rec == ["result:a", "result:b"]
+    with Cassette.replay(path, strict=False) as replayer:
+        (bridged,) = wrap_langchain_tools([_search([], forbidden=True)], replayer)
+        rep = bridged.batch([{"query": "a"}, {"query": "b"}], config={"max_concurrency": 1})
+        assert replayer.remaining == 0
+    assert rep == ["result:a", "result:b"]
+
+
+def test_hard_zero_live_with_socket_disabled(tmp_path, monkeypatch):
+    import socket
+
+    path = tmp_path / "c.jsonl"
+    calls: list[str] = []
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([_search(calls)], cassette)
+        bridged.invoke({"query": "agents"})
+
+    def _blocked(*args, **kwargs):
+        raise RuntimeError("network egress disabled")
+
+    monkeypatch.setattr(socket, "create_connection", _blocked)
+    monkeypatch.setattr(socket.socket, "connect", _blocked)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    replay_calls: list[str] = []
+    with Cassette.replay(path) as replayer:
+        (bridged,) = wrap_langchain_tools([_search(replay_calls, forbidden=True)], replayer)
+        result = bridged.invoke({"query": "agents"})
+        assert replayer.remaining == 0
+    assert result == "result:agents"
+    assert replay_calls == []
+
+
+def test_nested_leaf_ordering_mismatch_fails_closed(tmp_path):
+    # An orchestration tool that calls a bridged leaf inside its own body records
+    # the leaf event BEFORE the outer result; bridging the outer body would consume
+    # events out of order. We leave orchestration live and only bridge the leaf; a
+    # bridged outer body must fail closed rather than scan past the nested event.
+    path = tmp_path / "c.jsonl"
+    leaf_calls: list[str] = []
+
+    with Cassette.record(path) as cassette:
+        (leaf,) = wrap_langchain_tools([_search(leaf_calls)], cassette)
+
+        @tool
+        def outer(query: str) -> str:
+            "orchestration tool (must stay live)"
+            inner = leaf.invoke({"query": query})
+            return "outer:" + inner
+
+        # If a user WRONGLY bridges the orchestration tool too:
+        (bridged_outer,) = wrap_langchain_tools([outer], cassette)
+        bridged_outer.invoke({"query": "x"})
+
+    # On replay the outer bridge tries to consume its TOOL_CALL first, but the
+    # recorded order is leaf-then-outer, so it fails closed (mismatch), not scan-ahead.
+    with pytest.raises(ReplayMismatchError):
+        with Cassette.replay(path) as replayer:
+            (leaf,) = wrap_langchain_tools([_search([], forbidden=True)], replayer)
+
+            @tool
+            def outer(query: str) -> str:
+                "orchestration"
+                inner = leaf.invoke({"query": query})
+                return "outer:" + inner
+
+            (bridged_outer,) = wrap_langchain_tools([outer], replayer)
+            bridged_outer.invoke({"query": "x"})
+
+
+def test_real_callback_lifecycle_counts(tmp_path):
+    from langchain_core.callbacks import BaseCallbackHandler
+
+    class _Counter(BaseCallbackHandler):
+        def __init__(self):
+            self.starts = 0
+            self.ends = 0
+
+        def on_tool_start(self, *args, **kwargs):
+            self.starts += 1
+
+        def on_tool_end(self, *args, **kwargs):
+            self.ends += 1
+
+    path = tmp_path / "c.jsonl"
+    rec_cb = _Counter()
+    with Cassette.record(path) as cassette:
+        (bridged,) = wrap_langchain_tools([_search([])], cassette)
+        bridged.invoke({"query": "agents"}, config={"callbacks": [rec_cb]})
+    assert (rec_cb.starts, rec_cb.ends) == (1, 1)
+
+    rep_cb = _Counter()
+    with Cassette.replay(path) as replayer:
+        (bridged,) = wrap_langchain_tools([_search([], forbidden=True)], replayer)
+        bridged.invoke({"query": "agents"}, config={"callbacks": [rep_cb]})
+        assert replayer.remaining == 0
+    assert (rep_cb.starts, rep_cb.ends) == (1, 1)  # callbacks run once on replay too
