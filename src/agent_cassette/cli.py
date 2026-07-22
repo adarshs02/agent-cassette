@@ -15,6 +15,8 @@ from agent_cassette.assertions import (
     max_total_cost,
     max_total_duration_ms,
     no_errors,
+    tool_called,
+    tool_not_called,
 )
 from agent_cassette.cassette import Cassette
 from agent_cassette.diagnostics import doctor
@@ -105,10 +107,20 @@ def _recover(source: Path, destination: Path, *, as_json: bool) -> int:
 def _check(parsed: argparse.Namespace) -> int:
     checks = []
     if parsed.no_errors or not any(
-        (parsed.require, parsed.max_cost is not None, parsed.max_duration_ms is not None)
+        (
+            parsed.require,
+            parsed.tool_called,
+            parsed.tool_not_called,
+            parsed.max_cost is not None,
+            parsed.max_duration_ms is not None,
+        )
     ):
         checks.append(no_errors())
     checks.extend(_required_check(value) for value in parsed.require)
+    # Deterministic, documented order: --require, then --tool-called (in order),
+    # then --tool-not-called (in order), then cost/duration.
+    checks.extend(tool_called(name) for name in parsed.tool_called)
+    checks.extend(tool_not_called(name) for name in parsed.tool_not_called)
     if parsed.max_cost is not None:
         checks.append(max_total_cost(parsed.max_cost))
     if parsed.max_duration_ms is not None:
@@ -125,6 +137,12 @@ def _check(parsed: argparse.Namespace) -> int:
 def _required_check(value: str):
     event_type, separator, name = value.partition(":")
     return contains_event(EventType(event_type), name=name if separator else None)
+
+
+def _tool_name_argument(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError("tool name must be nonempty")
+    return value
 
 
 _ALLOWED_INJECTED_ERRORS: dict[str, type[Exception]] = {
@@ -274,6 +292,12 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("cassette", type=Path)
     check_parser.add_argument("--no-errors", action="store_true")
     check_parser.add_argument("--require", action="append", default=[], metavar="TYPE[:NAME]")
+    check_parser.add_argument(
+        "--tool-called", action="append", default=[], metavar="NAME", type=_tool_name_argument
+    )
+    check_parser.add_argument(
+        "--tool-not-called", action="append", default=[], metavar="NAME", type=_tool_name_argument
+    )
     check_parser.add_argument("--max-cost", type=float)
     check_parser.add_argument("--max-duration-ms", type=float)
     check_parser.add_argument("--report-json", type=Path)

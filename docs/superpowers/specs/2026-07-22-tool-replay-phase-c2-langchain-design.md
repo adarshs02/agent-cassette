@@ -1,8 +1,8 @@
 # Tool record/replay — Phase C2 design (LangChain registered-tool bridge)
 
-Status: **implemented-pending-review** (2026-07-22; bridge-identity/async-fallback/error-trust
+Status: **implemented-approved** (2026-07-22; bridge-identity/async-fallback/error-trust
 correction, then default-`_arun` integrity correction). Scope: **Phase C2 specification,
-implemented.** Base: accepted C1 head `f6191003` on `release/1.1.0`. Implementation is
+implemented.** Base: accepted C1 head `f6191003` on `release/1.1.0`. Accepted at `2859726`. Implementation is
 committed on `release/1.1.0`; the exact base/head SHAs are recorded in the coding-agent
 handoff report (the spec is committed with the implementation, so its own commit hash
 cannot be embedded without invalidating it).

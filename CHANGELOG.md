@@ -56,6 +56,22 @@ acceptance, then shipped as one release.
   `content`/`content_and_artifact` results; matches on strict bounded-JSON
   args/kwargs/cleaned-config and translates a recorded `ToolException` so `handle_tool_error`
   reruns. Complements — does not replace — `wrap_langchain` and `langchain_callback_handler`.
+- Tool-replay assertions (Phase D): public `tool_called(name, *, with_input=..., times=None,
+  minimum=None, maximum=None, match="exact", ignore_paths=(), fuzzy_threshold=0.9)` and
+  `tool_not_called(name, *, with_input=..., match="exact", ignore_paths=(), fuzzy_threshold=0.9)`
+  predicates (in `agent_cassette.assertions`, composable with `assert_trajectory`/
+  `check_trajectory`) assert on recorded logical tool-call boundaries — a `TOOL_CALL` event, or an
+  ERROR whose logical `call_type` is `tool_call` (a failed call, counted once), one per invocation
+  across `wrap_tool`, MCP, OpenAI Agents, and LangChain; `TOOL_RESULT` is never counted. Omitting
+  `with_input` (the `Ellipsis` sentinel) matches any input; a supplied value is detached and
+  strictly validated at creation, then matched with the Replayer's `normalize_input`/`inputs_match`
+  machinery (`exact`/`subset`/`normalized`/`fuzzy`). Diagnostics stay secret-safe (JSON-native
+  details only, never raw payloads or a value `repr`). A new read-only
+  `Replayer.consumed_events -> tuple[Event, ...]` returns detached copies, in cassette order, of the
+  events a session actually consumed. `agent-cassette check` gains repeatable name-only
+  `--tool-called NAME` / `--tool-not-called NAME`. Combined with a full-consumption
+  (`remaining == 0`) replay, these are the public, deterministic way to verify in CI that an agent
+  run replayed its expected tool trajectory with zero live tool execution.
 
 ## [1.0.1] - 2026-07-21
 

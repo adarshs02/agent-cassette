@@ -15,6 +15,8 @@ from agent_cassette.assertions import (
     max_total_cost,
     max_total_duration_ms,
     no_errors,
+    tool_called,
+    tool_not_called,
 )
 from agent_cassette.automatic import (
     automatic_openai_from_env,
@@ -120,6 +122,8 @@ __all__ = [
     "register_migration",
     "recover_cassette",
     "render_viewer",
+    "tool_called",
+    "tool_not_called",
     "unregister_migration",
     "wrap_anthropic",
     "wrap_gemini",

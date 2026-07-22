@@ -53,6 +53,8 @@ EXPECTED_PUBLIC_API = {
     "recover_cassette",
     "register_migration",
     "render_viewer",
+    "tool_called",
+    "tool_not_called",
     "unregister_migration",
     "wrap_anthropic",
     "wrap_gemini",

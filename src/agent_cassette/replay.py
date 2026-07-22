@@ -90,6 +90,19 @@ class Replayer(_ToolSessionMixin):
         """Number of recorded calls not yet consumed."""
         return len(self.events) - len(self._consumed)
 
+    @property
+    def consumed_events(self) -> tuple[Event, ...]:
+        """Detached copies of consumed events, in original cassette order.
+
+        Returns copies round-tripped through the code-owned ``Event.to_dict``/
+        ``Event.from_dict`` path (never references into ``self.events``), so mutating a
+        returned event or its payload cannot alter Replayer state. Ordered by cassette
+        index regardless of strict/non-strict or concurrent consumption order.
+        """
+        return tuple(
+            Event.from_dict(self.events[index].to_dict()) for index in sorted(self._consumed)
+        )
+
     def call(
         self,
         event_type: EventType | str,
