@@ -1,9 +1,12 @@
+import html
 import json
 
 import pytest
 
-from agent_cassette import Cassette, EventType
+from agent_cassette import Cassette, EventType, check_trajectory, tool_called, wrap_tool
+from agent_cassette.events import Event
 from agent_cassette.redaction import REDACTED, RedactionError, redact
+from agent_cassette.viewer import render_viewer, write_viewer
 
 
 def test_redacts_nested_secrets_and_bearer_tokens():
@@ -113,3 +116,270 @@ def test_redaction_error_does_not_render_hostile_values():
 
     with pytest.raises(RedactionError, match=r"^cyclic value cannot be redacted$"):
         redact(value)
+
+
+# --------------------------------------------------------------------------- #
+# Connection-URI userinfo passwords
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # every listed database/broker scheme
+        ("postgres://user:pw@db/app", "postgres://user:[REDACTED]@db/app"),
+        ("postgresql://user:pw@db:5432/app", "postgresql://user:[REDACTED]@db:5432/app"),
+        ("mysql://root:pw@localhost/app", "mysql://root:[REDACTED]@localhost/app"),
+        ("mariadb://root:pw@localhost/app", "mariadb://root:[REDACTED]@localhost/app"),
+        ("redis://:pw@cache:6379/0", "redis://:[REDACTED]@cache:6379/0"),
+        ("rediss://user:pw@cache:6380/0", "rediss://user:[REDACTED]@cache:6380/0"),
+        ("mongodb://admin:pw@m1/db", "mongodb://admin:[REDACTED]@m1/db"),
+        ("mongodb+srv://admin:pw@cluster/db", "mongodb+srv://admin:[REDACTED]@cluster/db"),
+        ("amqp://guest:pw@broker/vhost", "amqp://guest:[REDACTED]@broker/vhost"),
+        ("amqps://guest:pw@broker/vhost", "amqps://guest:[REDACTED]@broker/vhost"),
+        # a custom valid scheme
+        ("myproto://u:pw@host/x", "myproto://u:[REDACTED]@host/x"),
+        # last-@ so an unescaped '@' inside the password is still removed
+        ("postgres://user:p@ssw0rd@db.internal/app", "postgres://user:[REDACTED]@db.internal/app"),
+        # percent-encoded password
+        ("postgres://u:p%40ss%3Aword@db/app", "postgres://u:[REDACTED]@db/app"),
+        # IPv6 host with port
+        ("redis://:pw@[::1]:6379/0", "redis://:[REDACTED]@[::1]:6379/0"),
+        # empty username preserved
+        ("redis://:pw@host/0", "redis://:[REDACTED]@host/0"),
+    ],
+)
+def test_uri_userinfo_password_is_redacted(raw, expected):
+    assert redact(raw) == expected
+    assert "pw" not in redact(raw).replace("[REDACTED]", "")
+
+
+def test_uri_embedded_in_prose_and_multiple_urls():
+    text = "primary postgres://a:secret1@h1/x, backup mysql://b:secret2@h2/y."
+    result = redact(text)
+    assert result == "primary postgres://a:[REDACTED]@h1/x, backup mysql://b:[REDACTED]@h2/y."
+    assert "secret1" not in result and "secret2" not in result
+
+
+def test_uri_followed_by_bracket_and_period():
+    assert redact("(see amqps://guest:guestpw@broker/vhost).") == (
+        "(see amqps://guest:[REDACTED]@broker/vhost)."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Secret query parameters
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("https://h/p?password=pw", "https://h/p?password=[REDACTED]"),
+        ("https://h/p?secret=pw", "https://h/p?secret=[REDACTED]"),
+        ("https://h/p?token=pw", "https://h/p?token=[REDACTED]"),
+        ("https://h/p?access_token=pw", "https://h/p?access_token=[REDACTED]"),
+        ("https://h/p?refresh-token=pw", "https://h/p?refresh-token=[REDACTED]"),
+        ("https://h/p?api_key=pw", "https://h/p?api_key=[REDACTED]"),
+        ("https://h/p?api-key=pw", "https://h/p?api-key=[REDACTED]"),
+        ("https://h/p?API_KEY=pw", "https://h/p?API_KEY=[REDACTED]"),
+        # mixed secret + non-secret, order and separators preserved
+        (
+            "https://h/p?page=2&token=pw&sort=asc",
+            "https://h/p?page=2&token=[REDACTED]&sort=asc",
+        ),
+        ("https://h/p?a=1;token=pw", "https://h/p?a=1;token=[REDACTED]"),
+        # blank value preserved (nothing to leak)
+        ("https://h/p?token=", "https://h/p?token="),
+        # fragment preserved
+        ("https://h/p?token=pw#section", "https://h/p?token=[REDACTED]#section"),
+        # userinfo password AND query secret together
+        (
+            "postgres://u:dbpw@h/db?password=qpw",
+            "postgres://u:[REDACTED]@h/db?password=[REDACTED]",
+        ),
+        # percent-encoded secret value entirely replaced
+        ("https://h/p?token=ab%26cd", "https://h/p?token=[REDACTED]"),
+    ],
+)
+def test_secret_query_values_are_redacted(raw, expected):
+    result = redact(raw)
+    assert result == expected
+    assert "pw" not in result.replace("[REDACTED]", "")
+
+
+def test_uri_redaction_is_idempotent():
+    raw = "postgres://user:p@ssw0rd@db/app?password=x&token=y#f"
+    once = redact(raw)
+    assert redact(once) == once
+    assert "p@ssw0rd" not in once and "=x" not in once and "=y" not in once
+
+
+# --------------------------------------------------------------------------- #
+# False positives — must NOT be altered
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "unchanged",
+    [
+        "https://example.com/path?page=2&sort=asc",  # ordinary URL, no secret
+        "alice@example.com",  # bare email
+        "https://user@host/path",  # username-only userinfo
+        "https://h/p/user:pass@thing",  # ':@' only in the path
+        "https://h/p?redirect=user@example.com",  # '@' in a non-secret query value
+        "https://h/p#user:tok@frag",  # ':@' only in the fragment
+        "redis://cache/db#note?token=kept",  # '?' inside the fragment is not a query
+        "/home/user:group/a@b/file.txt",  # filesystem path, no scheme
+        "mailto:alice@example.com",  # non-hierarchical scheme
+        "run at 12:30 and see user@host later",  # prose colons/at-signs
+    ],
+)
+def test_false_positives_are_not_redacted(unchanged):
+    assert redact(unchanged) == unchanged
+
+
+def test_uri_redaction_recurses_and_preserves_shapes_without_rendering():
+    class Hostile:
+        def __str__(self):
+            raise AssertionError("__str__ must not run")
+
+        def __repr__(self):
+            raise AssertionError("__repr__ must not run")
+
+    hostile = Hostile()
+    shared = {"dsn": "postgres://u:pw@h/db"}
+    value = {
+        "a": shared,
+        "b": shared,  # acyclic alias
+        "list": ["mysql://x:pw@h/y", 1, hostile],
+        "tuple": ("redis://:pw@h/0",),
+    }
+    result = redact(value)
+    assert result["a"] == {"dsn": "postgres://u:[REDACTED]@h/db"}
+    assert result["b"] == {"dsn": "postgres://u:[REDACTED]@h/db"}
+    assert result["list"][0] == "mysql://x:[REDACTED]@h/y"
+    assert result["list"][2] is hostile  # hostile object passed through untouched
+    assert isinstance(result["tuple"], tuple)
+    assert result["tuple"][0] == "redis://:[REDACTED]@h/0"
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end: Recorder, replay matching, viewer, opt-out
+# --------------------------------------------------------------------------- #
+
+_DSN = "postgres://svc:p@ssw0rd@db.internal:5432/app?token=qT0ken%26ABC"
+_ENCODED_SECRETS = ("p@ssw0rd", "qT0ken%26ABC", "qT0ken&ABC")
+
+
+def _artifact_has_no_secret(text: str) -> None:
+    for secret in _ENCODED_SECRETS:
+        assert secret not in text, secret
+        assert html.escape(secret) not in text, secret
+
+
+def test_recorder_scrubs_uri_in_input_output_metadata(tmp_path):
+    path = tmp_path / "run.jsonl"
+    with Cassette.record(path) as cassette:
+        cassette.add(
+            EventType.TOOL_CALL,
+            "connect",
+            input={"dsn": _DSN},
+            output={"echo": f"connected to {_DSN}"},
+            metadata={"note": _DSN},
+        )
+    raw = path.read_text(encoding="utf-8")
+    _artifact_has_no_secret(raw)
+    stored = json.loads(raw)
+    assert (
+        stored["input"]["dsn"] == "postgres://svc:[REDACTED]@db.internal:5432/app?token=[REDACTED]"
+    )
+
+
+def test_wrapped_tool_replay_matches_original_live_uri(tmp_path):
+    path = tmp_path / "run.jsonl"
+
+    def connect(dsn):
+        return {"ok": True}
+
+    with Cassette.record(path) as cassette:
+        wrap_tool(connect, cassette, name="connect")(_DSN)
+    _artifact_has_no_secret(path.read_text(encoding="utf-8"))
+
+    ran: list[str] = []
+
+    def forbidden(dsn):
+        ran.append("ran")
+        raise AssertionError("live tool ran during replay")
+
+    with Cassette.replay(path) as replayer:
+        # replay is driven with the ORIGINAL live URI; normalize_input redacts it to the
+        # same stored form, so the match succeeds without ever storing the secret.
+        assert wrap_tool(forbidden, replayer, name="connect")(_DSN) == {"ok": True}
+        assert replayer.remaining == 0
+        assert check_trajectory(
+            replayer.consumed_events,
+            tool_called("connect", with_input={"args": [_DSN]}, match="subset"),
+        ).passed
+    assert ran == []
+
+
+def test_hybrid_redacts_replayed_prefix_and_live_suffix(tmp_path):
+    source = tmp_path / "src.jsonl"
+    output = tmp_path / "fork.jsonl"
+    with Cassette.record(source) as cassette:
+        cassette.add(EventType.TOOL_CALL, "prefix", input={"dsn": _DSN}, output={"ok": 1})
+
+    with Cassette.fork(source, output, at=1) as hybrid:
+        # prefix replays by matching the original live URI (normalized to the stored form)
+        assert hybrid.call(EventType.TOOL_CALL, "prefix", {"dsn": _DSN}, lambda: {"ok": 1}) == {
+            "ok": 1
+        }
+        # live suffix records a fresh URI secret, which is redacted before append
+        hybrid.call(
+            EventType.TOOL_CALL,
+            "suffix",
+            {"dsn": _DSN},
+            lambda: {"echo": f"live {_DSN}"},
+        )
+    _artifact_has_no_secret(output.read_text(encoding="utf-8"))
+
+
+def test_viewer_scrubs_unredacted_event(tmp_path):
+    event = Event(
+        id="e1",
+        timestamp="2026-01-01T00:00:00Z",
+        type=EventType.TOOL_CALL,
+        name="connect",
+        input={"dsn": _DSN},
+    )
+    html_text = render_viewer([event])  # default redaction on
+    _artifact_has_no_secret(html_text)
+
+    destination = tmp_path / "viewer.html"
+    write_viewer(destination, [event])
+    _artifact_has_no_secret(destination.read_text(encoding="utf-8"))
+
+
+def test_redact_secrets_false_preserves_uri_secret(tmp_path):
+    path = tmp_path / "run.jsonl"
+    with Cassette.record(path, redact_secrets=False) as cassette:
+        cassette.add(EventType.TOOL_CALL, "connect", input={"dsn": _DSN})
+    assert "p@ssw0rd" in path.read_text(encoding="utf-8")
+
+    event = Event(
+        id="e1",
+        timestamp="2026-01-01T00:00:00Z",
+        type=EventType.TOOL_CALL,
+        name="connect",
+        input={"dsn": _DSN},
+    )
+    assert "p@ssw0rd" in render_viewer([event], redact_secrets=False)
+
+
+def test_existing_secret_key_and_bearer_behavior_stable():
+    assert redact({"Authorization": "Bearer abc123", "api_key": "sk-live"}) == {
+        "Authorization": REDACTED,
+        "api_key": REDACTED,
+    }
+    assert redact("prefix Bearer tok.en-value suffix") == f"prefix Bearer {REDACTED} suffix"

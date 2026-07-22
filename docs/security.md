@@ -13,11 +13,22 @@ a value defined outside those roots is never read or called. Unsupported Python 
 are rejected instead of invoking their `str` or `repr` methods.
 
 Redaction runs before persistence when enabled. It recursively covers common
-authorization, API-key, token, secret, and password fields and bearer values.
-Cycles and excessive depth fail deterministically; shared acyclic values are safe.
-Redaction is defense in depth, not a data-loss-prevention boundary: opaque secret
-formats and secrets embedded in unrecognized free text may remain. Review fixtures
-before committing them and use synthetic credentials in tests.
+authorization, API-key, token, secret, and password fields and bearer values. It also
+scrubs credentials embedded in hierarchical connection URIs: the password in
+`scheme://user:password@host` userinfo (using the last `@` so an unescaped `@` inside a
+password is still removed) and secret-named URL query values
+(`?password=`/`?token=`/`?api_key=`/…), for any valid scheme — `postgres`, `mysql`,
+`redis`, `mongodb`/`mongodb+srv`, `amqp`, and custom schemes alike. Scheme, username,
+host/port (including IPv6), path, non-secret query parameters, fragment, and surrounding
+prose are preserved byte-for-byte; the scrub is idempotent and runs in the one recursive
+`redact()` path, so it reaches recorder, hybrid, replay input normalization, assertions,
+and the viewer uniformly. Cycles and excessive depth fail deterministically; shared
+acyclic values are safe.
+
+Redaction is defense in depth, not a complete data-loss-prevention boundary: opaque
+secret formats, ordinary URLs without recognized userinfo/query secrets, and secrets
+embedded in otherwise unrecognized free text may still remain. Review fixtures before
+committing them and use synthetic credentials in tests.
 
 Recorded failures replay through a fixed allowlist of built-in exception types.
 Unknown recorded types become `RecordedCallError`. Provider and LangChain envelopes

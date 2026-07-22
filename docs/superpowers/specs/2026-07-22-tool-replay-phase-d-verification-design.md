@@ -1,9 +1,10 @@
 # Tool record/replay — Phase D design (offline tool-call assertions and verification UX)
 
-Status: **implemented-pending-review** (2026-07-22). Scope: **Phase D specification,
-implemented.** Base: accepted C2 head `2859726` on `release/1.1.0`, plus a correction commit
-enforcing exact-type validation and command-line CLI occurrence order. Implementation is committed
-on `release/1.1.0`; the exact base/head SHAs are in the coding-agent handoff report.
+Status: **implemented-approved** (2026-07-22; accepted at `f4bcad6`). Scope: **Phase D
+specification, implemented.** Base: accepted C2 head `2859726` on `release/1.1.0`, plus two
+correction commits enforcing exact-type validation, command-line CLI occurrence order, a real
+dict-subclass boundary regression, and the compatibility note. Implementation is committed on
+`release/1.1.0`; the exact base/head SHAs are in the coding-agent handoff report.
 
 Feature goal (all phases): replay a full agent loop without executing real tools. Phase D closes
 the feature with public, deterministic, offline tool-call assertions. `1.1.0` stays unpublished

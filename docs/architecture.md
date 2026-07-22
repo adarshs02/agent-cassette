@@ -43,7 +43,8 @@ discovery, no global state.
 ## Security
 
 - Authorization, API-key, token, password, and secret fields are redacted recursively
-  before write.
+  before write, along with connection-URI userinfo passwords
+  (`scheme://user:password@host`) and secret-named URL query values.
 - Replayed failures restore only allowlisted built-in exceptions; unknown types become
   `RecordedCallError` and are never dynamically imported.
 - The viewer escapes all content, re-applies redaction, sets a restrictive CSP, and

@@ -8,6 +8,21 @@ All notable changes to Agent Cassette are documented here. The format follows
 
 ## [1.1.0] - Unreleased
 
+### Security
+- Connection-URI credential redaction: the recursive `redact()` path (recorder, hybrid,
+  replay input normalization, assertions, and viewer) now scrubs passwords embedded in
+  hierarchical connection URIs — the userinfo password in `scheme://user:password@host`
+  (using the last `@` so an unescaped `@` inside a password is still removed) and
+  secret-named URL query values (`?password=`/`?token=`/`?api_key=`/…) — for any valid
+  scheme (`postgres`, `postgresql`, `mysql`, `mariadb`, `redis`, `rediss`, `mongodb`,
+  `mongodb+srv`, `amqp`, `amqps`, and custom schemes). Scheme, username, host/port
+  (including IPv6), path, non-secret query parameters, fragment, and surrounding prose are
+  preserved byte-for-byte; percent-encoded secrets are removed; the scrub is idempotent.
+  Ordinary URLs, emails, username-only userinfo, and `@`/`:` in paths/prose are left
+  unchanged. A value such as `postgres://user:p@ssw0rd@db.internal/app` previously reached
+  cassette/viewer output with the password intact. No public API, `EventType`, schema, or
+  dependency change; `redact_secrets=False` remains the exact opt-out.
+
 Tool record/replay: deterministically replay an agent's Python tool calls — scalar and
 streaming — without executing the real tools. Held unpublished until all tool-replay
 phases (A core replay, B streaming, C1/C2 framework bridges, D verification UX) pass

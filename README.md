@@ -59,7 +59,7 @@ Then verify the trajectory offline: `tool_called`/`tool_not_called` assert which
 | [Cassette schema](docs/cassette-schema.md) | JSONL event contract (v1) |
 | [CLI exit codes](docs/cli-exit-codes.md) | Exit-code contract for CI |
 | [Upgrades & migrations](docs/beta-upgrade.md) | Version history and cassette migrations |
-| [Security model](docs/security.md) | Redaction, replay safety, current limits |
+| [Security model](docs/security.md) | Secret redaction (fields, bearer tokens, and connection-URI credentials), replay safety, current limits |
 | [Public API](docs/public-api.md) | Exported surface |
 | [Adding a provider](docs/adding-a-provider.md) | Extend record/replay to a new SDK |
 
