@@ -3,7 +3,16 @@ import json
 
 import pytest
 
-from agent_cassette import Cassette, EventType, check_trajectory, tool_called, wrap_tool
+import agent_cassette.redaction as redaction_module
+from agent_cassette import (
+    Cassette,
+    EventType,
+    InjectionRule,
+    Return,
+    check_trajectory,
+    tool_called,
+    wrap_tool,
+)
 from agent_cassette.events import Event
 from agent_cassette.redaction import REDACTED, RedactionError, redact
 from agent_cassette.viewer import render_viewer, write_viewer
@@ -200,6 +209,8 @@ def test_uri_followed_by_bracket_and_period():
         ),
         # percent-encoded secret value entirely replaced
         ("https://h/p?token=ab%26cd", "https://h/p?token=[REDACTED]"),
+        # percent-encoded secret KEY: decode to classify, preserve the encoded spelling
+        ("https://h/p?api%5Fkey=encoded-secret", "https://h/p?api%5Fkey=[REDACTED]"),
     ],
 )
 def test_secret_query_values_are_redacted(raw, expected):
@@ -213,6 +224,185 @@ def test_uri_redaction_is_idempotent():
     once = redact(raw)
     assert redact(once) == once
     assert "p@ssw0rd" not in once and "=x" not in once and "=y" not in once
+
+
+# --------------------------------------------------------------------------- #
+# Every URI in one non-whitespace run is scanned
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (
+            "postgres://a:s1@h/x,mysql://b:s2@j/y",
+            "postgres://a:[REDACTED]@h/x,mysql://b:[REDACTED]@j/y",
+        ),
+        (
+            "postgres://a:s1@h,mysql://b:s2@j",
+            "postgres://a:[REDACTED]@h,mysql://b:[REDACTED]@j",
+        ),
+        (
+            "https://h/p?next=postgres://u:pw@db",
+            "https://h/p?next=postgres://u:[REDACTED]@db",
+        ),
+        (
+            "https://h/p?next=postgres://u:pw@db,redis://:rpw@cache/0",
+            "https://h/p?next=postgres://u:[REDACTED]@db,redis://:[REDACTED]@cache/0",
+        ),
+        # semicolon adjacency and three URLs in one run
+        (
+            "postgres://a:s1@h;mysql://b:s2@j;redis://:s3@k/0",
+            "postgres://a:[REDACTED]@h;mysql://b:[REDACTED]@j;redis://:[REDACTED]@k/0",
+        ),
+    ],
+)
+def test_every_uri_occurrence_is_redacted(raw, expected):
+    result = redact(raw)
+    assert result == expected
+    for leaked in ("s1", "s2", "s3", ":pw@", ":rpw@"):
+        assert leaked not in result
+    assert redact(result) == result  # idempotent
+
+
+def test_whitespace_separated_prose_still_works():
+    assert redact("primary postgres://a:s1@h and backup mysql://b:s2@j done") == (
+        "primary postgres://a:[REDACTED]@h and backup mysql://b:[REDACTED]@j done"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # a secret query value that itself contains '://' is replaced whole
+        ("https://h/p?password=abc://def", "https://h/p?password=[REDACTED]"),
+        ("https://h/p?token=http://evil.com/cb", "https://h/p?token=[REDACTED]"),
+        # an outer secret query param after a nested URI is still redacted, and the
+        # nested URI's userinfo is scrubbed too
+        (
+            "https://h/p?a=1&next=redis://:pw@c&secret=xyz",
+            "https://h/p?a=1&next=redis://:[REDACTED]@c&secret=[REDACTED]",
+        ),
+    ],
+)
+def test_nested_and_secret_query_values(raw, expected):
+    result = redact(raw)
+    assert result == expected
+    assert redact(result) == result
+    for leaked in ("abc://def", "http://evil.com/cb", ":pw@", "xyz"):
+        assert leaked not in result
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "postgres://" + "a" * 500_000,  # long scheme-char run, no '://'
+        "a" * 60_000 + ":" + "a" * 60_000 + "://x",  # colon-split token (no regex backtracking)
+    ],
+)
+def test_uri_scan_is_linear_on_hostile_input(hostile):
+    import time
+
+    start = time.perf_counter()
+    redact(hostile)
+    assert time.perf_counter() - start < 2.0
+
+
+def test_deeply_nested_query_uris_fail_closed_with_depth_error():
+    # A pathologically deep chain of URIs nested through query values must fail closed
+    # with the same bounded, secret-free depth error as deep containers — never a
+    # RecursionError or a leak.
+    deep = "a://h?k=" * 150 + "b://:SEKRET@h"
+    with pytest.raises(RedactionError, match=r"^maximum redaction depth 64 exceeded$"):
+        redact(deep)
+
+
+def test_many_adjacent_uris_scrub_iteratively_without_recursion_error():
+    # Hundreds of comma-adjacent URLs must all redact (walked iteratively, not recursively,
+    # so the Python recursion limit is never reached).
+    raw = ",".join(f"postgres://u{i}:s{i}@h{i}/x" for i in range(400))
+    result = redact(raw)
+    assert result.count(REDACTED) == 400
+    assert ":s0@" not in result and ":s399@" not in result
+
+
+# --------------------------------------------------------------------------- #
+# Unmatched surrounding brackets are preserved
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # unmatched trailing ']' from prose is kept
+        ("[https://h/p?token=secret]", "[https://h/p?token=[REDACTED]]"),
+        # bracketed userinfo password with IPv6 host: balanced ']' stays inside
+        ("[redis://:pw@[::1]:6379/0]", "[redis://:[REDACTED]@[::1]:6379/0]"),
+        # adjacent bracketed URLs each scrubbed
+        (
+            "[postgres://a:s1@h][mysql://b:s2@j]",
+            "[postgres://a:[REDACTED]@h][mysql://b:[REDACTED]@j]",
+        ),
+        # angle/paren/quote prose already terminates the token; still preserved
+        ("<https://h?token=secret>", "<https://h?token=[REDACTED]>"),
+        ("(redis://:pw@cache/0)", "(redis://:[REDACTED]@cache/0)"),
+    ],
+)
+def test_unmatched_brackets_preserved(raw, expected):
+    result = redact(raw)
+    assert result == expected
+    assert redact(result) == result  # idempotence, including already-bracketed
+
+
+# --------------------------------------------------------------------------- #
+# Hybrid injection + opt-out + fail-safe
+# --------------------------------------------------------------------------- #
+
+
+def test_hybrid_injection_scrubs_uri(tmp_path):
+    source = tmp_path / "src.jsonl"
+    output = tmp_path / "fork.jsonl"
+    with Cassette.record(source):
+        pass  # empty baseline; the call is injected
+
+    rule = InjectionRule(Return({"dsn": _DSN}), type="tool_call", name="connect")
+    with Cassette.fork(source, output, injections=(rule,)) as hybrid:
+        hybrid.call(EventType.TOOL_CALL, "connect", {"dsn": _DSN}, lambda: {"unused": True})
+    # the injected output and the recorded input are both scrubbed before persistence
+    _artifact_has_no_secret(output.read_text(encoding="utf-8"))
+
+
+def test_hybrid_redact_secrets_false_preserves_uri_secret(tmp_path):
+    source = tmp_path / "src.jsonl"
+    output = tmp_path / "fork.jsonl"
+    with Cassette.record(source):
+        pass
+
+    rule = InjectionRule(Return({"dsn": _DSN}), type="tool_call", name="connect")
+    with Cassette.fork(source, output, injections=(rule,), redact_secrets=False) as hybrid:
+        hybrid.call(EventType.TOOL_CALL, "connect", {"dsn": _DSN}, lambda: {"unused": True})
+    assert "p@ssw0rd" in output.read_text(encoding="utf-8")
+
+
+def test_uri_helper_failure_raises_generic_error_and_persists_nothing(tmp_path, monkeypatch):
+    def boom(_authority):
+        raise RuntimeError("SECRET-BEARING-INTERNAL-DETAIL")
+
+    monkeypatch.setattr(redaction_module, "_redact_authority", boom)
+
+    with pytest.raises(RedactionError) as raised:
+        redact("postgres://user:p@ssw0rd@db/app")
+    message = str(raised.value)
+    assert "p@ssw0rd" not in message
+    assert "SECRET-BEARING-INTERNAL-DETAIL" not in message
+    assert message == "malformed connection URI could not be redacted"
+
+    path = tmp_path / "run.jsonl"
+    with pytest.raises(RedactionError):
+        with Cassette.record(path) as cassette:
+            cassette.add(EventType.TOOL_CALL, "connect", input={"dsn": "postgres://u:p@ssw0rd@h/x"})
+    if path.exists():
+        assert "p@ssw0rd" not in path.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #

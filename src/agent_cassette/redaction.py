@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import string
 from typing import Any
 from urllib.parse import unquote
 
@@ -14,14 +15,21 @@ _SECRET_KEY = re.compile(
 )
 _BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
 
-# A hierarchical URI token: a valid scheme, ``://``, then any run of characters that
-# are not whitespace or a delimiter that ends a URL in prose/markup. Sentence
-# punctuation and a closing paren stay in the token and are peeled back off afterwards,
-# so trailing ``)`` or ``.`` in surrounding prose is preserved byte-for-byte. ``]``/``}``
-# are not peeled: they are structural in IPv6 authorities and in the ``[REDACTED]``
-# marker, so peeling them would corrupt IPv6 hosts and break idempotence.
-_URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>`\\{}|^]*")
+# A hierarchical URI token is a valid scheme (letter then ``[A-Za-z0-9+.-]``), ``://``,
+# then a run of characters that are not whitespace or a delimiter that ends a URL in
+# prose/markup. Tokens are located by a linear ``str.find("://")`` scan (no regex, so no
+# backtracking on hostile input); a run holding several adjacent URIs is walked
+# iteratively, and only a URI nested inside a non-secret query value recurses.
+_SCHEME_CHARS = frozenset(string.ascii_letters + string.digits + "+.-")
+_SCHEME_START_CHARS = frozenset(string.ascii_letters)
+_URI_DELIMS = frozenset("\"'<>`\\{}|^")  # end a URI token; whitespace also ends it
+# Sentence punctuation and a closing paren are peeled off the token and re-appended, so
+# trailing prose is preserved byte-for-byte. A ``]`` is peeled only when *unmatched* (a
+# surrounding prose bracket): a balanced ``]`` belonging to an IPv6 authority (``[::1]``)
+# or the ``[REDACTED]`` marker stays inside the token, so IPv6 hosts and idempotence hold.
+# (``{``/``}`` never reach here — they terminate the token at the match level.)
 _TRAILER_CHARS = ".,;:!?)"
+_UNMATCHED_TRAILERS = {"]": "["}
 _QUERY_SEPARATORS = re.compile(r"([&;])")
 
 
@@ -66,36 +74,142 @@ def _redact_at(value: Any, *, depth: int, active: set[int]) -> Any:
     return value
 
 
-def _scrub_uris(text: str) -> str:
+def _scrub_uris(text: str, depth: int = 0) -> str:
     """Redact userinfo passwords and secret query values in every hierarchical URI."""
     if "://" not in text:
         return text
-    return _URI.sub(_scrub_uri_token, text)
-
-
-def _scrub_uri_token(match: re.Match[str]) -> str:
-    token = match.group(0)
+    if depth >= _MAX_DEPTH:
+        raise RedactionError(f"maximum redaction depth {_MAX_DEPTH} exceeded")
     try:
-        core, trailer = _split_trailer(token)
-        scheme, _, rest = core.partition("://")
-        cut = _first_delimiter(rest)
-        authority, remainder = (rest, "") if cut is None else (rest[:cut], rest[cut:])
-        return f"{scheme}://{_redact_authority(authority)}{_redact_remainder(remainder)}{trailer}"
+        out: list[str] = []
+        pos = 0
+        while True:
+            marker = text.find("://", pos)
+            if marker == -1:
+                out.append(text[pos:])
+                break
+            start = _scheme_start_for_marker(text, marker, pos)
+            if start is None:  # a '://' with no valid scheme in front of it
+                out.append(text[pos : marker + 3])
+                pos = marker + 3
+                continue
+            end = _run_end(text, start)  # linear forward scan to the URI's end
+            out.append(text[pos:start])  # prose before this URI run
+            out.append(_scrub_run(text[start:end], depth))
+            pos = end
+        return "".join(out)
+    except RedactionError:
+        raise
     except Exception:
         # Fail safe: never leak the value through an exception, never render it.
         raise RedactionError("malformed connection URI could not be redacted") from None
 
 
+def _run_end(text: str, start: int) -> int:
+    end = start
+    length = len(text)
+    while end < length and not (text[end].isspace() or text[end] in _URI_DELIMS):
+        end += 1
+    return end
+
+
+def _scrub_run(run: str, depth: int) -> str:
+    """Redact one maximal non-whitespace run, which may hold several adjacent URIs.
+
+    Adjacent URIs are walked iteratively (no per-URI recursion), so a run with hundreds
+    of comma/semicolon-separated URLs stays shallow; only a URI genuinely nested inside a
+    non-secret query value recurses, and that nesting is bounded by ``_MAX_DEPTH``.
+    """
+    core, trailer = _split_trailer(run)
+    out: list[str] = []
+    pos = 0
+    while pos < len(core):
+        marker = core.find("://", pos)
+        if marker == -1:
+            out.append(core[pos:])
+            break
+        start = _scheme_start_for_marker(core, marker, pos)
+        if start is None:  # a '://' with no valid scheme in front of it
+            out.append(core[pos : marker + 3])
+            pos = marker + 3
+            continue
+        out.append(core[pos:start])  # prose/separator before this URI
+        piece, pos = _scrub_single(core, start, marker, depth)
+        out.append(piece)
+    return "".join(out) + trailer
+
+
+def _scrub_single(core: str, start: int, marker: int, depth: int) -> tuple[str, int]:
+    """Redact one URI starting at ``start`` (its ``://`` at ``marker``); return the
+    redacted text and the index in ``core`` where scanning should resume."""
+    scheme = core[start:marker]
+    rest = core[marker + 3 :]
+    first_delim = _first_of(rest, "/?#")
+    query_at = rest.find("?")
+    next_scheme = _next_scheme_start(rest)
+    # A next scheme reached before this URI's query is a separate adjacent URI (or one
+    # embedded in the path): end this URI at it and let the run loop pick the next up.
+    if next_scheme is not None and (query_at == -1 or next_scheme < query_at):
+        authority_end = next_scheme if first_delim is None else min(first_delim, next_scheme)
+        authority = rest[:authority_end]
+        between = rest[authority_end:next_scheme]  # path text before the next scheme
+        piece = f"{scheme}://{_redact_authority(authority)}{between}"
+        return piece, marker + 3 + next_scheme
+    # Otherwise this URI owns its whole remainder (path/query/fragment); secret query
+    # values are replaced whole and non-secret values are scrubbed recursively.
+    authority = rest if first_delim is None else rest[:first_delim]
+    remainder = "" if first_delim is None else rest[first_delim:]
+    piece = f"{scheme}://{_redact_authority(authority)}{_redact_remainder(remainder, depth)}"
+    return piece, len(core)
+
+
+def _first_of(text: str, chars: str) -> int | None:
+    indexes = [text.index(char) for char in chars if char in text]
+    return min(indexes) if indexes else None
+
+
+def _scheme_start_for_marker(core: str, marker: int, floor: int) -> int | None:
+    # Walk back from a ``://`` over scheme characters to the leading letter, not before
+    # ``floor`` (already-emitted text). Returns None if no valid scheme precedes ``://``.
+    begin = marker
+    while begin > floor and core[begin - 1] in _SCHEME_CHARS:
+        begin -= 1
+    while begin < marker and core[begin] not in _SCHEME_START_CHARS:
+        begin += 1
+    return begin if begin < marker else None
+
+
 def _split_trailer(token: str) -> tuple[str, str]:
     end = len(token)
-    while end > 0 and token[end - 1] in _TRAILER_CHARS:
-        end -= 1
+    while end > 0:
+        char = token[end - 1]
+        if char in _TRAILER_CHARS:
+            end -= 1
+            continue
+        opener = _UNMATCHED_TRAILERS.get(char)
+        if opener is not None and token.count(char, 0, end) > token.count(opener, 0, end):
+            end -= 1  # unmatched closing bracket from surrounding prose
+            continue
+        break
     return token[:end], token[end:]
 
 
-def _first_delimiter(rest: str) -> int | None:
-    indexes = [rest.index(char) for char in "/?#" if char in rest]
-    return min(indexes) if indexes else None
+def _next_scheme_start(rest: str) -> int | None:
+    # Find the next ``scheme://`` using a linear ``str.find`` for ``://`` (avoiding any
+    # regex backtracking), then walk back over scheme characters to the leading letter.
+    search = 0
+    while True:
+        marker = rest.find("://", search)
+        if marker == -1:
+            return None
+        begin = marker
+        while begin > 0 and rest[begin - 1] in _SCHEME_CHARS:
+            begin -= 1
+        while begin < marker and rest[begin] not in _SCHEME_START_CHARS:
+            begin += 1  # a scheme must start with a letter; skip leading digits/+.-
+        if begin < marker:
+            return begin
+        search = marker + 3  # no valid scheme preceded this '://'; keep scanning
 
 
 def _redact_authority(authority: str) -> str:
@@ -108,28 +222,32 @@ def _redact_authority(authority: str) -> str:
     return f"{username}:{REDACTED}@{host}"
 
 
-def _redact_remainder(remainder: str) -> str:
+def _redact_remainder(remainder: str, depth: int) -> str:
     # Split off the fragment first: a '?' after the '#' belongs to the fragment and is
-    # preserved verbatim; only a query before any '#' is scrubbed.
+    # preserved verbatim; only a query before any '#' is scrubbed. The path (and any URI
+    # nested in it, e.g. a comma-adjacent second URL) is scrubbed recursively.
     path_query, hash_sep, fragment = remainder.partition("#")
-    if "?" not in path_query:
-        return remainder
-    head, _, query = path_query.partition("?")
-    return f"{head}?{_redact_query(query)}{hash_sep}{fragment}"
+    if "?" in path_query:
+        head, _, query = path_query.partition("?")
+        return f"{_scrub_uris(head, depth + 1)}?{_redact_query(query, depth)}{hash_sep}{fragment}"
+    return f"{_scrub_uris(path_query, depth + 1)}{hash_sep}{fragment}"
 
 
-def _redact_query(query: str) -> str:
+def _redact_query(query: str, depth: int) -> str:
     return "".join(
-        part if index % 2 else _redact_query_param(part)
+        part if index % 2 else _redact_query_param(part, depth)
         for index, part in enumerate(_QUERY_SEPARATORS.split(query))
     )
 
 
-def _redact_query_param(part: str) -> str:
+def _redact_query_param(part: str, depth: int) -> str:
     key, sep, value = part.partition("=")
     if not sep or not value:
         return part  # a flag or an already-blank value cannot leak a secret
-    return f"{key}={REDACTED}" if _SECRET_KEY.search(unquote(key)) else part
+    if _SECRET_KEY.search(unquote(key)):
+        return f"{key}={REDACTED}"  # secret value replaced whole, even if it contains '://'
+    # non-secret value: scrub any URI nested inside it (depth-bounded)
+    return f"{key}={_scrub_uris(value, depth + 1)}"
 
 
 def _enter_container(value: object, active: set[int]) -> int:

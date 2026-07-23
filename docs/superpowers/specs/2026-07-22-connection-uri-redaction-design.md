@@ -25,31 +25,49 @@ broad regex that erases whole URLs or ordinary `@` text.
 
 ## Algorithm
 
-A URI token is matched by `[A-Za-z][A-Za-z0-9+.-]*://` followed by a run of non-whitespace,
-non-quote/bracket characters (`"`, `'`, `<`, `>`, backtick, `\`, `{`, `}`, `|`, `^` terminate it).
-Trailing sentence punctuation and a closing paren (`.,;:!?)`) are peeled off and re-appended
-verbatim so surrounding prose survives byte-for-byte; `]`/`}` are **not** peeled because they are
-structural in IPv6 authorities and in the `[REDACTED]` marker (peeling them would corrupt IPv6
-hosts and break idempotence). For each token:
+A URI token is matched by a **greedy, linear** regex — a valid scheme `[A-Za-z][A-Za-z0-9+.-]*://`
+followed by a run of non-whitespace characters that are not `"`, `'`, `<`, `>`, backtick, `\`, `{`,
+`}`, `|`, or `^` (no lookahead loop, so no catastrophic backtracking). Several URIs packed into one
+non-whitespace run — `postgres://a:s1@h,mysql://b:s2@j`, three comma/semicolon-adjacent URLs, or a
+URI nested in a query value (`https://h/p?next=postgres://u:pw@db`) — are handled by splitting the
+token deterministically in Python, not by the regex: the **authority ends at the first `/`, `?`,
+`#`, or the start of the next scheme**, and the remainder (path plus each non-secret query value) is
+scrubbed **recursively** so every nested/adjacent URI's userinfo and secrets are reached. The next
+scheme is located with a linear `str.find("://")` plus a walk back to the leading letter (never a
+backtracking regex), keeping the whole scan linear even on a long hostile scheme-char run.
 
-1. Split scheme, then split the remainder into authority (up to the first `/`, `?`, or `#`) and the
-   rest.
+Trailing sentence punctuation and a closing paren (`.,;:!?)`) are peeled off the token and
+re-appended verbatim so surrounding prose survives byte-for-byte. A closing `]` is peeled only when
+it is **unmatched** within the token (a surrounding prose bracket, e.g. `[https://h?token=x]`); a
+balanced `]` belonging to an IPv6 authority (`[::1]`) or to the `[REDACTED]` marker stays inside the
+token, so IPv6 hosts and idempotence are preserved. Quote, angle-bracket, and `{`/`}`/`|` prose
+already terminates the token at the match level. For each token:
+
+1. Split scheme, then split the remainder into authority (up to the first `/`, `?`, `#`, or next
+   scheme start) and the rest.
 2. **Authority userinfo**: if the authority contains `@`, split at the **last** `@` (so an
    unescaped `@` inside a password is still removed). If the userinfo contains `:`, keep the
    username and replace everything from its first `:` through the last `@` with `[REDACTED]`.
    Username-only userinfo (`scheme://user@host`) is left unchanged.
-3. **Query**: only the part after `?` (before any `#`). Split on `&`/`;` preserving separators and
-   order; for each `key=value`, decode the key for classification only and, if it matches the
-   existing `_SECRET_KEY` vocabulary (authorization, password, secret, token/access-token/
-   refresh-token, api-key forms; case-insensitive) and the value is non-empty, replace the value
-   with `[REDACTED]`. Percent-encoded secret values are replaced whole; the key spelling/encoding,
-   blank values, non-secret parameters, separators, path, and fragment are preserved.
+3. **Path**: the remainder before any `?` is scrubbed recursively, so a comma/semicolon-adjacent
+   URI carried in the path (`postgres://a@h/x,mysql://b@j`) has its own userinfo/query redacted.
+4. **Query**: only the part after `?` (before any `#`). Split on `&`/`;` preserving separators and
+   order; for each `key=value`, decode the key for classification only. If it matches the existing
+   `_SECRET_KEY` vocabulary (authorization, password, secret, token/access-token/refresh-token,
+   api-key forms; case-insensitive) and the value is non-empty, replace the whole value with
+   `[REDACTED]` — even when that value itself contains `://`. A non-secret value is scrubbed
+   recursively instead, so a nested URI's userinfo is still removed while the outer key/value text,
+   separators, blank values, path, and fragment are preserved byte-for-byte.
 
 The transform is idempotent (`[REDACTED]` re-redacts to itself) and preserves recursive
-list/dict/tuple shape, acyclic aliases, and the existing cycle/depth `RedactionError` behavior. A
-malformed token fails safe: parsing never renders the value, and any unexpected error raises a
-generic `RedactionError` whose message names only the structural problem — never the input,
-password, URI, `str(value)`, or `repr(value)`.
+list/dict/tuple shape, acyclic aliases, and the existing cycle/depth `RedactionError` behavior.
+Adjacent URIs in one run are walked iteratively (no per-URI recursion), so hundreds of
+comma/semicolon-separated URLs stay shallow; only a URI genuinely nested inside a non-secret query
+value recurses, and that recursion is bounded by the same `MAX_DEPTH` (64) as container redaction —
+a pathologically deep chain fails closed with the identical `maximum redaction depth 64 exceeded`
+error rather than a `RecursionError`. A malformed token fails safe: parsing never renders the value,
+and any unexpected error raises a generic `RedactionError` whose message names only the structural
+problem — never the input, password, URI, `str(value)`, or `repr(value)`.
 
 ## False positives (left unchanged)
 
