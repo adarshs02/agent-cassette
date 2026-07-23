@@ -35,10 +35,14 @@ As a second guard, `_redact_uri` ends the authority at the first `/`, `?`, `#`, 
 start**, so a scheme embedded in the path region with no query (e.g. `…&db2=postgres://…`) is never
 severed across its `://`; the remainder is scrubbed recursively.
 Balanced `[...]` (an IPv6 authority `[::1]`, or the `[REDACTED]` marker) and `(...)` stay inside the
-URI. This one pass replaces the old separate trailer-peel (so a long unmatched-bracket suffix is
-linear, not a per-bracket rescan) and guarantees every scheme occurrence in a run is visited without
-swallowing a neighbour, a closing bracket, or a `,`/`;`-separated next URL. Prose between URIs
-(including `],[` or `),(`) is emitted verbatim. For each URI:
+URI. Each contiguous adjacency-prose run (`,` `;` `&` `(` `)` `[` `]`) is consumed **once** — its
+bracket balance, first `,`/`;`/`&`, and first unmatched closer are found in a single forward scan
+and the scheme lookahead is invoked **at most once per run**, so the whole scan is O(n) even on a
+long delimiter run (a pathological `scheme://h` + `"&" * N` is linear, not the earlier O(n²) that
+rescanned the suffix from every delimiter). This one pass replaces the old separate trailer-peel and
+guarantees every scheme occurrence in a run is visited without swallowing a neighbour, a closing
+bracket, or a `,`/`;`/`&`-separated next URL. Prose between URIs (including `],[` or `),(`) is
+emitted verbatim. For each URI:
 
 1. Split scheme, then split the remainder into authority (up to the first `/`, `?`, `#`) and the
    rest.

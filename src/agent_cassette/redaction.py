@@ -104,8 +104,9 @@ def _scrub_uris(text: str, depth: int = 0) -> str:
 
 def _uri_end(text: str, start: int) -> int:
     # One linear pass: a URI ends at whitespace, a hard delimiter, an unmatched closing
-    # ')'/']' (surrounding prose), or a ','/';' that (after optional prose brackets)
-    # precedes the next scheme. Balanced '[...]'/'(...)' stay inside the URI.
+    # ')'/']' (surrounding prose), or a ','/';'/'&' that (after optional prose brackets)
+    # precedes the next scheme. Balanced '[...]'/'(...)' stay inside the URI. Each
+    # adjacency-prose run is consumed once, so a long delimiter run is linear, not O(n^2).
     index = start
     length = len(text)
     square = 0
@@ -114,30 +115,53 @@ def _uri_end(text: str, start: int) -> int:
         char = text[index]
         if char.isspace() or char in _URI_DELIMS:
             break
-        if char == "[":
-            square += 1
-        elif char == "]":
-            if square == 0:
-                break  # unmatched closing bracket -> surrounding prose
-            square -= 1
-        elif char == "(":
-            paren += 1
-        elif char == ")":
-            if paren == 0:
-                break
-            paren -= 1
-        elif char in _ADJACENCY_DELIMS and _adjacent_uri_follows(text, index):
-            break  # this ','/';'/'&' separates the current URI from an adjacent one
+        if char in _ADJACENCY_PROSE:
+            # Consume this whole adjacency-prose run (',' ';' '&' '(' ')' '[' ']') exactly
+            # once, recording bracket balance, the first ','/';'/'&', and the first
+            # unmatched closer. Each character is touched a constant number of times and
+            # _scheme_at is called at most once per run -- so a long delimiter run stays
+            # linear. Do NOT return early on the closer: the URI breaks at whichever comes
+            # first, an adjacency delimiter (when a scheme follows the run) or the closer.
+            cursor = index
+            first_delim = -1
+            first_unmatched = -1
+            run_square, run_paren = square, paren
+            while cursor < length and text[cursor] in _ADJACENCY_PROSE:
+                run_char = text[cursor]
+                if run_char in _ADJACENCY_DELIMS:
+                    if first_delim < 0:
+                        first_delim = cursor
+                elif run_char == "[":
+                    run_square += 1
+                elif run_char == "]":
+                    if run_square == 0:
+                        if first_unmatched < 0:
+                            first_unmatched = cursor
+                    else:
+                        run_square -= 1
+                elif run_char == "(":
+                    run_paren += 1
+                elif run_char == ")":
+                    if run_paren == 0:
+                        if first_unmatched < 0:
+                            first_unmatched = cursor
+                    else:
+                        run_paren -= 1
+                cursor += 1
+            # ``cursor`` is the run end; a scheme reached by skipping the whole prose run
+            # (including any unmatched closer) makes an earlier delimiter an adjacency split.
+            breaks = []
+            if first_unmatched >= 0:
+                breaks.append(first_unmatched)
+            if first_delim >= 0 and _scheme_at(text, cursor):
+                breaks.append(first_delim)
+            if breaks:
+                return min(breaks)
+            square, paren = run_square, run_paren
+            index = cursor  # the whole run is URI body; jump past it
+            continue
         index += 1
     return index
-
-
-def _adjacent_uri_follows(text: str, index: int) -> bool:
-    cursor = index
-    length = len(text)
-    while cursor < length and text[cursor] in _ADJACENCY_PROSE:
-        cursor += 1
-    return _scheme_at(text, cursor)
 
 
 def _scheme_at(text: str, index: int) -> bool:

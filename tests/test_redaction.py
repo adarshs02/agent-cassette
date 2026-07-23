@@ -390,6 +390,56 @@ def test_large_unmatched_bracket_suffix_is_linear():
     assert result == "postgres://u:[REDACTED]@h" + "]" * 200_000
 
 
+def test_adjacency_prose_run_uses_constant_scheme_lookahead(monkeypatch):
+    # A contiguous run of thousands of ','/';'/'&' must trigger O(1) scheme-lookahead
+    # calls (one per contiguous run), not one per character -- the fix for the O(n^2)
+    # delimiter-run rescan.
+    calls = {"n": 0}
+    original = redaction_module._scheme_at
+
+    def counting(text, index):
+        calls["n"] += 1
+        return original(text, index)
+
+    monkeypatch.setattr(redaction_module, "_scheme_at", counting)
+
+    redact("https://h/path" + "&" * 5000)
+    assert calls["n"] <= 1  # no trailing scheme: at most one lookahead for the run
+
+    calls["n"] = 0
+    result = redact("https://h/path" + "&" * 5000 + "postgres://u:p@h")
+    assert calls["n"] == 1  # exactly one lookahead resolves the whole run
+    assert result == "https://h/path" + "&" * 5000 + "postgres://u:[REDACTED]@h"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # large pure delimiter run, no following scheme -> unchanged
+        ("https://h/p" + "&" * 20_000, "https://h/p" + "&" * 20_000),
+        ("https://h/p" + ",;" * 10_000, "https://h/p" + ",;" * 10_000),
+        # large mixed prose run then a scheme -> the run is a separator, second scrubbed
+        (
+            "https://h" + "&,;" * 5_000 + "postgres://u:p@h",
+            "https://h" + "&,;" * 5_000 + "postgres://u:[REDACTED]@h",
+        ),
+        # an unmatched closer in the middle of a run ends the URI there
+        (
+            "postgres://u:pw@h" + "&" * 100 + "]" + "&" * 100 + "postgres://x:y@z",
+            "postgres://u:[REDACTED]@h" + "&" * 100 + "]" + "&" * 100 + "postgres://x:[REDACTED]@z",
+        ),
+        # a ','/'&' BEFORE an unmatched closer, with a scheme after the run, breaks at the
+        # delimiter (not the closer) so the delimiter is not swallowed into a secret value
+        ("mysql://h?token=x,)http://y", "mysql://h?token=[REDACTED],)http://y"),
+        ("mysql://h?token=x&]http://y", "mysql://h?token=[REDACTED]&]http://y"),
+    ],
+)
+def test_large_adjacency_runs_exact_and_terminate(raw, expected):
+    result = redact(raw)
+    assert result == expected
+    assert redact(result) == result
+
+
 # --------------------------------------------------------------------------- #
 # Unmatched surrounding brackets are preserved
 # --------------------------------------------------------------------------- #
