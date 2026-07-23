@@ -326,6 +326,70 @@ def test_many_adjacent_uris_scrub_iteratively_without_recursion_error():
     assert ":s0@" not in result and ":s399@" not in result
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # a secret query value must not swallow a delimiter-separated next URI
+        (
+            "https://a?token=s,https://b?token=t",
+            "https://a?token=[REDACTED],https://b?token=[REDACTED]",
+        ),
+        (
+            "[https://a?token=s],[https://b?token=t]",
+            "[https://a?token=[REDACTED]],[https://b?token=[REDACTED]]",
+        ),
+        (
+            "(https://a?token=s),(https://b?token=t)",
+            "(https://a?token=[REDACTED]),(https://b?token=[REDACTED])",
+        ),
+        # a secret value that itself begins with a URI is still replaced whole
+        ("https://a?token=https://u:p@db", "https://a?token=[REDACTED]"),
+        # a scheme in a query flag / after a separator / in a post-query fragment is scrubbed
+        (
+            "https://a?token=s&postgres://u:p@h",
+            "https://a?token=[REDACTED]&postgres://u:[REDACTED]@h",
+        ),
+        ("https://a?flag&postgres://u:p@h", "https://a?flag&postgres://u:[REDACTED]@h"),
+        ("https://a?next=x;postgres://u:p@h", "https://a?next=x;postgres://u:[REDACTED]@h"),
+        (
+            "https://h?x=1#next=postgres://u:p@db",
+            "https://h?x=1#next=postgres://u:[REDACTED]@db",
+        ),
+        # a fragment-only 'access_token=' is NOT query-key redaction
+        ("https://h#access_token=value", "https://h#access_token=value"),
+        ("https://h/p#user:tok@frag", "https://h/p#user:tok@frag"),
+        # a bare '&scheme://' adjacency with no query/path must still scrub the second URI
+        ("https://a&postgres://u:p@h", "https://a&postgres://u:[REDACTED]@h"),
+        (
+            "db1=https://h&db2=postgres://u:p@h",
+            "db1=https://h&db2=postgres://u:[REDACTED]@h",
+        ),
+        ("https://a/p&postgres://u:p@h", "https://a/p&postgres://u:[REDACTED]@h"),
+        # ordinary '&' query params (no scheme) are untouched
+        ("https://a?a=1&b=2", "https://a?a=1&b=2"),
+        ("https://h?ids=1,2,3", "https://h?ids=1,2,3"),
+    ],
+)
+def test_adjacent_and_flag_and_fragment_uris(raw, expected):
+    result = redact(raw)
+    assert result == expected
+    assert redact(result) == result
+    for leaked in (":s@", "token=s", "token=t", ":p@h", ":p@db", "u:p@"):
+        assert leaked not in result
+
+
+def test_large_unmatched_bracket_suffix_is_linear():
+    import time
+
+    # A long run of unmatched trailing ']' must be peeled in a single pass, not by a
+    # per-bracket rescan of the whole token (which would be quadratic).
+    raw = "postgres://u:pw@h" + "]" * 200_000
+    start = time.perf_counter()
+    result = redact(raw)
+    assert time.perf_counter() - start < 1.0
+    assert result == "postgres://u:[REDACTED]@h" + "]" * 200_000
+
+
 # --------------------------------------------------------------------------- #
 # Unmatched surrounding brackets are preserved
 # --------------------------------------------------------------------------- #
@@ -397,10 +461,16 @@ def test_uri_helper_failure_raises_generic_error_and_persists_nothing(tmp_path, 
     assert "SECRET-BEARING-INTERNAL-DETAIL" not in message
     assert message == "malformed connection URI could not be redacted"
 
+    # Catch the RedactionError INSIDE the recording context so the recorder's __exit__
+    # does not turn the escaping exception into an ``uncaught_exception`` event: the failed
+    # add must persist no event at all, and no secret must reach the file.
+    from agent_cassette.storage import load_events
+
     path = tmp_path / "run.jsonl"
-    with pytest.raises(RedactionError):
-        with Cassette.record(path) as cassette:
+    with Cassette.record(path) as cassette:
+        with pytest.raises(RedactionError):
             cassette.add(EventType.TOOL_CALL, "connect", input={"dsn": "postgres://u:p@ssw0rd@h/x"})
+    assert load_events(path) == []
     if path.exists():
         assert "p@ssw0rd" not in path.read_text(encoding="utf-8")
 
