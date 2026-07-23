@@ -8,6 +8,25 @@ All notable changes to Agent Cassette are documented here. The format follows
 
 ## [1.1.0] - Unreleased
 
+### Added
+- Agent-native closed-loop CLI (Phase E): `agent-cassette setup`, `status`, `agent-manifest`,
+  and `ci` plus named `record`/`replay`/`rerecord` give an agent one safe, non-interactive loop —
+  preview/apply project scaffolding, know project/cassette state, record and replay cassettes by
+  config-owned name, read a structured pass/mismatch report, then fix-and-retry or explicitly
+  re-record. Every machine response and report file uses one canonical JSON envelope
+  (`schema_version`/`command`/`status`/`ok`/`exit_code`/`project`/`warnings`/`changes`/
+  `next_actions`/`data`) with argv-vector next actions and semantic exit codes (`0`/`1`/`2`).
+  `setup` builds on the existing no-follow atomic-apply engine, records generated-file SHA-256 in
+  `.agent-cassette/manifest.json`, never overwrites a file whose bytes differ (conflict), and never
+  runs consumer code, reads env values, or installs dependencies. Named `record` is create-only and
+  publishes a temporary cassette to the golden path only after full validation; `rerecord` is the
+  sole explicit golden-update path; `replay` stays offline (zero live calls at supported boundaries)
+  and writes a structured, secret-safe mismatch report. `ReplayMismatchError` gained backward-
+  compatible structured fields and payload-safe messages. `ci --github` scaffolds a replay-only
+  GitHub workflow (credential-empty env, no secrets, `permissions: contents: read`). Existing
+  `init`, positional `record`/`replay`, `fork`, the pytest fixture, and the public Python API are
+  unchanged; no new public Python export, `EventType`, schema, dependency, or version change.
+
 ### Security
 - Connection-URI credential redaction: the recursive `redact()` path (recorder, hybrid,
   replay input normalization, assertions, and viewer) now scrubs passwords embedded in

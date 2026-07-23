@@ -32,13 +32,28 @@ from agent_cassette.hybrid import (
     Return,
 )
 from agent_cassette.interop import export_otlp, import_otlp
+from agent_cassette.machine import Envelope, MachineInputError
 from agent_cassette.matching import MatchMode
 from agent_cassette.migration import migrate_cassette
+from agent_cassette.named_runs import (
+    NamedRunResult,
+    run_named_record,
+    run_named_replay,
+    run_named_rerecord,
+)
 from agent_cassette.project_init import (
     ProjectInitError,
     initialize_project,
     load_project_config_from_root,
     render_init_report,
+)
+from agent_cassette.project_loop import (
+    Overrides,
+    ProjectLoopError,
+    run_agent_manifest,
+    run_ci,
+    run_setup,
+    run_status,
 )
 from agent_cassette.replay import ReplayMismatchError
 from agent_cassette.reports import CIReport
@@ -288,6 +303,75 @@ class _ChildExecutionError(Exception):
         super().__init__(str(error))
 
 
+def _add_project_loop_parsers(subparsers: Any) -> None:
+    setup_parser = subparsers.add_parser("setup", help="safely scaffold or check a project")
+    setup_parser.add_argument("project", nargs="?", type=Path, default=None)
+    setup_mode = setup_parser.add_mutually_exclusive_group()
+    setup_mode.add_argument("--dry-run", action="store_true")
+    setup_mode.add_argument("--apply", action="store_true")
+    setup_mode.add_argument("--check", action="store_true")
+    setup_parser.add_argument("--provider", action="append", default=None, metavar="NAME")
+    setup_parser.add_argument("--framework", action="append", default=None, metavar="NAME")
+    setup_parser.add_argument("--test-framework", action="append", default=None, metavar="NAME")
+    setup_parser.add_argument("--cassette-dir", default=None)
+    setup_parser.add_argument(
+        "--match", choices=("exact", "subset", "normalized", "fuzzy"), default=None
+    )
+    strict_group = setup_parser.add_mutually_exclusive_group()
+    strict_group.add_argument("--strict", action="store_true", dest="setup_strict", default=None)
+    strict_group.add_argument(
+        "--no-strict", action="store_false", dest="setup_strict", default=None
+    )
+    setup_parser.add_argument("--github-ci", action="store_true")
+    setup_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    status_parser = subparsers.add_parser("status", help="report project and cassette state")
+    status_parser.add_argument("project", nargs="?", type=Path, default=None)
+    status_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    manifest_parser = subparsers.add_parser(
+        "agent-manifest", help="describe the machine command surface"
+    )
+    manifest_parser.add_argument("project", nargs="?", type=Path, default=None)
+    manifest_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    ci_parser = subparsers.add_parser("ci", help="scaffold or check a replay-only CI workflow")
+    ci_parser.add_argument("project", nargs="?", type=Path, default=None)
+    ci_parser.add_argument("--github", action="store_true", required=True)
+    ci_mode = ci_parser.add_mutually_exclusive_group()
+    ci_mode.add_argument("--dry-run", action="store_true")
+    ci_mode.add_argument("--apply", action="store_true")
+    ci_mode.add_argument("--check", action="store_true")
+    ci_parser.add_argument("--json", action="store_true", dest="as_json")
+
+
+def _setup_mode(parsed: argparse.Namespace) -> str:
+    if parsed.check:
+        return "check"
+    if parsed.apply:
+        return "apply"
+    return "dry-run"
+
+
+def _emit_envelope(envelope: Envelope) -> int:
+    print(envelope.to_json(), end="")
+    return envelope.exit_code
+
+
+def _emit_named(result: NamedRunResult) -> int:
+    # When a report file was written it is the sole machine channel (stdout gets only its
+    # path + a short outcome, never JSON mixed with child stdout). When no report exists
+    # (invalid input, so no child ran and no stdout to protect) emit the canonical envelope
+    # JSON so the caller still gets a machine-parseable response.
+    if result.report_path is not None:
+        print(f"{result.envelope.status}: {result.report_path}")
+    else:
+        print(result.envelope.to_json(), end="")
+    if result.child_exception is not None:
+        raise _ChildExecutionError(result.child_exception)
+    return result.envelope.exit_code
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command parser."""
     parser = argparse.ArgumentParser(prog="agent-cassette", description=__doc__)
@@ -391,8 +475,21 @@ def build_parser() -> argparse.ArgumentParser:
                 help="allow unconsumed cassette events",
             )
             run_parser.set_defaults(replay_strict=None)
-        run_parser.add_argument("cassette", type=Path)
+        run_parser.add_argument("--name", default=None, help="config-owned cassette name")
+        run_parser.add_argument("--project", type=Path, default=None)
+        run_parser.add_argument("--report-json", type=Path, default=None)
+        run_parser.add_argument("cassette", type=Path, nargs="?", default=None)
         run_parser.add_argument("python_command", nargs=argparse.REMAINDER)
+
+    rerecord_parser = subparsers.add_parser(
+        "rerecord", help="re-record an existing named cassette (explicit golden update)"
+    )
+    rerecord_parser.add_argument("--name", required=True, help="config-owned cassette name")
+    rerecord_parser.add_argument("--project", type=Path, default=None)
+    rerecord_parser.add_argument("--report-json", type=Path, default=None)
+    rerecord_parser.add_argument("python_command", nargs=argparse.REMAINDER)
+
+    _add_project_loop_parsers(subparsers)
 
     fork_parser = subparsers.add_parser("fork", help="replay a prefix then continue live")
     fork_parser.add_argument("source", type=Path)
@@ -440,6 +537,61 @@ def _dispatch(parsed: argparse.Namespace) -> int:
         report, exit_code = initialize_project(parsed.project, detect=parsed.detect, mode=mode)
         print(render_init_report(report, as_json=parsed.as_json))
         return exit_code
+    if parsed.command == "setup":
+        overrides = Overrides(
+            providers=tuple(parsed.provider) if parsed.provider is not None else None,
+            frameworks=tuple(parsed.framework) if parsed.framework is not None else None,
+            test_frameworks=(
+                tuple(parsed.test_framework) if parsed.test_framework is not None else None
+            ),
+            cassette_dir=parsed.cassette_dir,
+            match=parsed.match,
+            strict=parsed.setup_strict,
+        )
+        return _emit_envelope(
+            run_setup(
+                parsed.project,
+                mode=_setup_mode(parsed),
+                overrides=overrides,
+                include_ci=parsed.github_ci,
+            )
+        )
+    if parsed.command == "status":
+        return _emit_envelope(run_status(parsed.project))
+    if parsed.command == "agent-manifest":
+        return _emit_envelope(run_agent_manifest(parsed.project))
+    if parsed.command == "ci":
+        return _emit_envelope(run_ci(parsed.project, mode=_setup_mode(parsed)))
+    if parsed.command == "rerecord":
+        return _emit_named(
+            run_named_rerecord(
+                parsed.project, parsed.name, parsed.python_command, parsed.report_json
+            )
+        )
+    if parsed.command in ("record", "replay") and parsed.name is not None:
+        # argparse folds the first token after '--' into the optional cassette positional,
+        # so the child command is [cassette] + python_command. Use --name XOR a positional
+        # path: a stray path passed alongside --name folds into the child command and is
+        # validated as the command target (a nonexistent path is exit 2).
+        command = ([str(parsed.cassette)] if parsed.cassette is not None else []) + list(
+            parsed.python_command
+        )
+        if parsed.command == "record":
+            return _emit_named(
+                run_named_record(parsed.project, parsed.name, command, parsed.report_json)
+            )
+        return _emit_named(
+            run_named_replay(
+                parsed.project,
+                parsed.name,
+                command,
+                parsed.report_json,
+                match=parsed.match,
+                strict=parsed.replay_strict,
+            )
+        )
+    if parsed.command in ("record", "replay") and parsed.cassette is None:
+        raise _CLIInputError(f"{parsed.command} requires a cassette path or --name")
     return _run(parsed)
 
 
@@ -477,7 +629,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     except (
         CassetteCorruptionError,
         HybridConfigurationError,
+        MachineInputError,
         ProjectInitError,
+        ProjectLoopError,
         RunnerUsageError,
         _CLIInputError,
         OSError,

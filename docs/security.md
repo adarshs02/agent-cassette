@@ -45,6 +45,17 @@ floats, and non-`str` keys are rejected without calling `str`/`repr`/conversion 
 and assertion messages and `details` carry only JSON-native diagnostics (tool name,
 counts, indexes), never a raw input/output payload.
 
+The agent-native loop commands (`setup`, `status`, `agent-manifest`, `ci`) are static and
+side-effect-bounded: they never import or execute consumer code, read environment values, discover
+credentials, install dependencies, or spawn a subprocess. `setup`/`ci` reuse the initialization
+no-follow atomic-apply engine, record generated-file SHA-256 in `.agent-cassette/manifest.json`, and
+never overwrite a file whose bytes differ from the generated content (reported as a conflict).
+Named `record`/`rerecord` are the only live surface (they run the caller's child in-process);
+`replay` stays offline at supported boundaries. Machine reports and human error text carry only
+code-owned, bounded data — never a child command, environment value, payload, exception message,
+credential, or `repr` — and the structured replay-mismatch report and the public mismatch message
+are payload-safe (safe type/name and value-free changed paths only).
+
 Project initialization statically inspects manifests and source evidence. It does
 not execute consumer code or discover credentials. Mutating setup uses no-follow,
 directory-relative operations and fail-closed rollback rules on supported POSIX

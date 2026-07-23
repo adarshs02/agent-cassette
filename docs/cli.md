@@ -73,6 +73,30 @@ agent-cassette recover interrupted.jsonl recovered.jsonl   # salvage an incomple
 agent-cassette doctor                                # environment + integration health
 ```
 
+## Agent-native loop (setup / status / named runs / ci)
+
+For a machine-operable, non-interactive workflow, every command below prints one canonical JSON
+envelope (`--json`) or, for named runs, a report file path:
+
+```bash
+agent-cassette setup .  --apply --json          # scaffold config, smoke test, manifest (create-only)
+agent-cassette status . --json                   # detected/configured state, managed files, cassettes
+agent-cassette agent-manifest . --json           # static description of commands, exits, safety
+agent-cassette record  --name smoke -- python agent.py   # live; create-only golden cassette
+agent-cassette replay  --name smoke -- python agent.py   # offline; writes a pass/mismatch report
+agent-cassette rerecord --name smoke -- python agent.py  # explicit golden update (atomic)
+agent-cassette ci . --github --apply --json      # replay-only GitHub workflow scaffold
+```
+
+`setup`/`status`/`agent-manifest`/`ci` never run your code, read environment values, or install
+dependencies. `setup` is dry-run by default; mutation requires `--apply`. A named cassette resolves
+to `<cassette_dir>/<NAME>.jsonl` and its report to `.agent-cassette/reports/<command>-<NAME>.json`
+(override with `--report-json`, beneath the project). The report file is the machine channel —
+child stdout/stderr is never touched and no JSON is mixed into it. `record` is create-only and
+publishes only a valid, non-empty recording; `rerecord` is the only path that overwrites a golden.
+Next actions in the envelope are argument vectors, never shell strings. See
+[CLI exit codes](cli-exit-codes.md) for the `0`/`1`/`2` contract.
+
 Cassettes are JSONL, one strict event per line (schema v1). Loading fails closed on
 corruption; `recover` only salvages a torn final byte fragment into a new file. See the
 [schema contract](cassette-schema.md), [CLI exit codes](cli-exit-codes.md), and

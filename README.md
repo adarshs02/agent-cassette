@@ -46,6 +46,8 @@ Tool calls replay too: wrap any Python tool with `wrap_tool`, and bridge OpenAI 
 
 Then verify the trajectory offline: `tool_called`/`tool_not_called` assert which recorded tool boundaries appeared (by name, input, and count), `Replayer.consumed_events` exposes exactly what a replay session consumed, and `agent-cassette check --tool-called/--tool-not-called` runs the name-only checks in CI. These inspect recorded/consumed Agent Cassette boundaries — the zero-live guarantee covers supported wrapped/bridged tools, not arbitrary uninstrumented side effects.
 
+For agents, there's a non-interactive machine loop: `agent-cassette setup/status/agent-manifest/ci` and named `record`/`replay`/`rerecord` emit one JSON envelope (with argv-vector next actions and semantic exit codes) and write structured pass/mismatch reports — so an agent can scaffold a project, record by name, replay offline, and fix-and-retry without a TTY. `setup`/`status`/`ci` never run your code. See the [CLI reference](docs/cli.md).
+
 ## Docs
 
 | Guide | What's in it |

@@ -24,6 +24,10 @@
   uninstrumented side effects.
 - **Secret redaction** before anything hits disk, plus a script-free HTML viewer.
 - **OpenTelemetry/OpenInference** JSON import and export.
+- **Agent-native closed loop** — `setup`/`status`/`agent-manifest`/`ci` and named
+  `record`/`replay`/`rerecord` give an agent one non-interactive machine loop (JSON envelope +
+  report files); setup/status/ci run no consumer code, and named record is live while replay stays
+  offline at supported boundaries.
 
 ## Core model
 

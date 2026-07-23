@@ -34,3 +34,13 @@ guaranteed only at supported wrapped/bridged boundaries (`wrap_tool`,
 (arbitrary filesystem, subprocess, HTTP, database, or browser activity) are outside the
 contract and are neither replayed nor asserted on.
 
+## Phase E agent-native loop (1.1.0)
+
+The `setup`/`status`/`agent-manifest`/`ci` commands and named `record`/`replay`/`rerecord` are
+additive CLI behavior on schema-v1 core events with no new dependency and no change to the version
+ranges above. The machine envelope and manifest are schema `1`. `status` reports automatic capture
+coverage (OpenAI, Anthropic, OpenAI Agents) distinctly from providers/frameworks that require their
+documented explicit wrapper (Mistral, Gemini, MCP, LangChain), so it never claims automatic capture
+it cannot deliver. The generated CI workflow installs dependencies (which may use the network) but
+runs the test phase with provider credentials unset; supported replay boundaries are zero-live.
+

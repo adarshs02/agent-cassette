@@ -57,6 +57,32 @@ platform lacks them.
 Static manifest parse failures are warnings; do not execute project code to infer
 the missing dependency information.
 
+## Agent-native closed loop (machine flow)
+
+For a fully non-interactive, machine-parseable flow, an agent can drive one closed loop.
+Every command emits the same JSON envelope (`--json`) with `status`, `exit_code`, and
+argv-vector `next_actions`:
+
+```bash
+agent-cassette setup .  --apply --json                    # create-only scaffold + manifest
+agent-cassette status . --json                            # readiness, managed files, cassettes
+agent-cassette agent-manifest . --json                    # static command/exit/safety surface
+agent-cassette record  --name smoke -- python agent.py    # live; create-only golden cassette
+agent-cassette replay  --name smoke -- python agent.py    # offline; structured pass/mismatch report
+agent-cassette rerecord --name smoke -- python agent.py   # explicit golden update (atomic)
+agent-cassette ci . --github --apply --json               # replay-only workflow scaffold
+```
+
+`setup`/`status`/`agent-manifest`/`ci` never run consumer code, read environment values, or
+install dependencies; `setup` is dry-run unless `--apply`. Named `record` is **live** and
+create-only (an existing golden is exit 2); `replay` is **offline** at supported boundaries and
+writes its report to `.agent-cassette/reports/<command>-<NAME>.json` — the machine channel,
+separate from the child's untouched stdout. On a replay mismatch, read the report's
+`data.failure` (event index, kind, value-free changed paths) and either fix the code and retry or
+run the explicit, approval-marked `rerecord`. Never relax matching or delete a cassette to make a
+mismatch pass. `status.data.capture_coverage` distinguishes automatic capture (OpenAI, Anthropic,
+OpenAI Agents) from providers/frameworks needing an explicit wrapper.
+
 ## Interactive setup ("set up agent cassette")
 
 When a user asks a coding agent to "set up agent cassette" in their project, follow

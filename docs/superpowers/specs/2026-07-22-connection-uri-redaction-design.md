@@ -1,6 +1,6 @@
 # Connection-URI credential redaction — design
 
-Status: **implemented-pending-review** (2026-07-22). Base: accepted Phase D head `f4bcad6` on
+Status: **implemented-approved** (2026-07-22; accepted at `b1ba599`). Base: accepted Phase D head `f4bcad6` on
 `release/1.1.0`. Implementation is committed on `release/1.1.0`; the exact base/head SHAs are in
 the coding-agent handoff report. This closes the last pre-publish security blocker for the
 unpublished `1.1.0`; publication also requires the final release gate.

@@ -93,3 +93,24 @@ steps:
       candidate: tests/cassettes/candidate.jsonl
       report: agent-cassette-report.json
 ```
+
+To scaffold a replay-only workflow that runs your pytest suite offline (no provider
+credentials), use `agent-cassette ci . --github --apply` (or `agent-cassette setup .
+--github-ci --apply` on a fresh project). It sets provider credential variables empty,
+declares `permissions: contents: read`, verifies `agent-cassette setup . --check` before
+tests, and runs `pytest --cassette-mode=replay`.
+
+## Named record / replay for agents
+
+Record and replay cassettes by config-owned name instead of inventing file paths:
+
+```bash
+agent-cassette record --name smoke -- python agent.py   # live, create-only golden
+agent-cassette replay --name smoke -- python agent.py   # offline; writes a structured report
+```
+
+The replay report at `.agent-cassette/reports/replay-smoke.json` is the machine channel —
+your child program's stdout is untouched. On a mismatch it names the event index, kind
+(`type`/`name`/`input`/…), and value-free changed paths, and its deterministic next actions
+end with an explicit, approval-required `rerecord`. Update a golden only with
+`agent-cassette rerecord --name smoke -- python agent.py`.

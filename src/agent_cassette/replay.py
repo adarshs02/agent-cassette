@@ -20,7 +20,35 @@ from agent_cassette.tools import _ToolSessionMixin
 
 
 class ReplayMismatchError(AssertionError):
-    """Raised when execution no longer matches a cassette."""
+    """Raised when execution no longer matches a cassette.
+
+    Carries optional, code-owned structured fields so machine reports never parse the
+    prose message. Every field defaults to ``None``/empty, so a legacy caller constructing
+    the error with only a message keeps working. Payload values are never stored here.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str | None = None,
+        event_index: int | None = None,
+        expected: dict[str, str | None] | None = None,
+        actual: dict[str, str | None] | None = None,
+        changed_paths: tuple[str, ...] = (),
+        changed_paths_truncated: bool = False,
+        match: str | None = None,
+        remaining: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.event_index = event_index
+        self.expected = expected
+        self.actual = actual
+        self.changed_paths = changed_paths
+        self.changed_paths_truncated = changed_paths_truncated
+        self.match = match
+        self.remaining = remaining
 
 
 class RateLimitError(ConnectionError):
@@ -74,7 +102,10 @@ class Replayer(_ToolSessionMixin):
     def __exit__(self, exc_type: object, exc: BaseException | None, traceback: object) -> None:
         if exc is None and self.strict and self.remaining:
             raise ReplayMismatchError(
-                f"Replay finished with {self.remaining} unconsumed event(s) in {self.path}"
+                f"Replay finished with {self.remaining} unconsumed event(s)",
+                kind="unconsumed",
+                match=self.match,
+                remaining=self.remaining,
             )
 
     async def __aenter__(self) -> Replayer:
@@ -126,14 +157,29 @@ class Replayer(_ToolSessionMixin):
         expected_type = EventType(event_type)
         if not self.remaining:
             raise ReplayMismatchError(
-                f"Unexpected {expected_type.value} '{name}' at step {len(self.events) + 1}; "
-                "the cassette is exhausted"
+                f"Unexpected {expected_type.value} {_safe_name(name)!r} at "
+                f"step {len(self.events) + 1}; the cassette is exhausted",
+                kind="exhausted",
+                event_index=len(self.events),
+                actual={"type": expected_type.value, "name": _safe_name(name)},
+                match=self.match,
+                remaining=self.remaining,
             )
         index = self.position if self.strict else self._find_match(expected_type, name, input)
         event = self.events[index]
-        mismatch = self._mismatch(event, expected_type, name, input)
-        if mismatch:
-            raise ReplayMismatchError(f"Replay diverged at step {self.position + 1}: {mismatch}")
+        divergence = self._mismatch(event, expected_type, name, input)
+        if divergence is not None:
+            raise ReplayMismatchError(
+                _mismatch_message(self.position + 1, divergence),
+                kind=divergence["kind"],
+                event_index=self.position,
+                expected=divergence["expected"],
+                actual=divergence["actual"],
+                changed_paths=divergence["changed_paths"],
+                changed_paths_truncated=divergence["changed_paths_truncated"],
+                match=self.match,
+                remaining=self.remaining,
+            )
         self._consumed.add(index)
         self._advance_position()
         return event
@@ -144,10 +190,16 @@ class Replayer(_ToolSessionMixin):
 
     def _find_match(self, event_type: EventType, name: str, input: Any) -> int:
         for index, event in enumerate(self.events):
-            if index not in self._consumed and not self._mismatch(event, event_type, name, input):
+            if index in self._consumed:
+                continue
+            if self._mismatch(event, event_type, name, input) is None:
                 return index
         raise ReplayMismatchError(
-            f"No remaining event matches {event_type.value} '{name}' with input {input!r}"
+            f"No remaining event matches {event_type.value} {_safe_name(name)!r}",
+            kind="no-match",
+            actual={"type": event_type.value, "name": _safe_name(name)},
+            match=self.match,
+            remaining=self.remaining,
         )
 
     async def acall(
@@ -172,12 +224,17 @@ class Replayer(_ToolSessionMixin):
             serializer=serializer,
         )
 
-    def _mismatch(self, event: Event, event_type: EventType, name: str, input: Any) -> str | None:
+    def _mismatch(
+        self, event: Event, event_type: EventType, name: str, input: Any
+    ) -> dict[str, Any] | None:
+        """Return structured, payload-free divergence details, or ``None`` when matched."""
         recorded_type = _call_type(event)
+        expected = {"type": recorded_type.value, "name": _safe_name(event.name)}
+        actual = {"type": event_type.value, "name": _safe_name(name)}
         if recorded_type != event_type:
-            return f"expected type {recorded_type.value!r}, received {event_type.value!r}"
+            return _divergence("type", expected, actual)
         if event.name != name:
-            return f"expected name {event.name!r}, received {name!r}"
+            return _divergence("name", expected, actual)
         expected_input = normalize_input(event.input, self.ignore_paths)
         actual_input = normalize_input(input, self.ignore_paths)
         if not inputs_match(
@@ -187,7 +244,8 @@ class Replayer(_ToolSessionMixin):
             matcher=self.matcher,
             fuzzy_threshold=self.fuzzy_threshold,
         ):
-            return f"input changed from {expected_input!r} to {actual_input!r}"
+            paths, truncated = _changed_paths(expected_input, actual_input)
+            return _divergence("input", expected, actual, paths, truncated)
         return None
 
 
@@ -198,6 +256,108 @@ _SAFE_EXCEPTIONS: dict[str, type[Exception]] = {
     "TimeoutError": TimeoutError,
     "ValueError": ValueError,
 }
+
+
+_MAX_CHANGED_PATHS = 50
+
+
+def _safe_name(name: Any) -> str | None:
+    """Bound and strip control characters from a name for a machine report."""
+    if type(name) is not str:
+        return None
+    cleaned = "".join(char for char in name if char.isprintable())
+    return cleaned[:200]
+
+
+def _divergence(
+    kind: str,
+    expected: dict[str, str | None],
+    actual: dict[str, str | None],
+    changed_paths: tuple[str, ...] = (),
+    truncated: bool = False,
+) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "expected": expected,
+        "actual": actual,
+        "changed_paths": changed_paths,
+        "changed_paths_truncated": truncated,
+    }
+
+
+def _mismatch_message(step: int, divergence: dict[str, Any]) -> str:
+    # Payload-safe: names/types are safe to render; input values never are.
+    kind = divergence["kind"]
+    expected = divergence["expected"]
+    actual = divergence["actual"]
+    if kind == "type":
+        detail = f" (expected {expected['type']!r}, received {actual['type']!r})"
+    elif kind == "name":
+        detail = f" (expected {expected['name']!r}, received {actual['name']!r})"
+    else:
+        detail = ""
+    return f"Replay diverged at step {step}: {kind} mismatch{detail}"
+
+
+_UNSAFE_SEGMENT_CHARS = frozenset(".:/@%?#&= \t\"'\\")
+
+
+def _sanitize_segment(segment: str) -> str:
+    # Keys are structural, but a key can itself be payload (an email, token, or a URI used
+    # as a map key). Strip path/URI/query punctuation and non-printables and bound length so
+    # a sensitive key cannot survive intact in a changed-path segment.
+    cleaned = "".join(
+        char for char in segment if char.isprintable() and char not in _UNSAFE_SEGMENT_CHARS
+    )
+    return cleaned[:64] if cleaned else "?"
+
+
+def _changed_paths(expected: Any, actual: Any) -> tuple[tuple[str, ...], bool]:
+    """Dotted paths where two already-redacted/normalized JSON values differ.
+
+    Contains no values, caps at ``_MAX_CHANGED_PATHS``, sanitizes/control-bounds each path
+    segment, and reports truncation.
+    """
+    paths: list[str] = []
+    truncated = False
+
+    def add(prefix: list[str]) -> None:
+        nonlocal truncated
+        if len(paths) >= _MAX_CHANGED_PATHS:
+            truncated = True
+            return
+        paths.append(".".join(prefix) if prefix else ".")
+
+    def walk(exp: Any, act: Any, prefix: list[str]) -> None:
+        nonlocal truncated
+        if len(paths) >= _MAX_CHANGED_PATHS:
+            truncated = True
+            return
+        if isinstance(exp, dict) and isinstance(act, dict):
+            for key in dict.fromkeys([*exp, *act]):
+                if len(paths) >= _MAX_CHANGED_PATHS:
+                    truncated = True
+                    return
+                segment = prefix + [_sanitize_segment(str(key))]
+                if key not in exp or key not in act:
+                    add(segment)
+                elif exp[key] != act[key]:
+                    walk(exp[key], act[key], segment)
+        elif isinstance(exp, list) and isinstance(act, list):
+            if len(exp) != len(act):
+                add(prefix)
+            else:
+                for index, (item_exp, item_act) in enumerate(zip(exp, act, strict=True)):
+                    if len(paths) >= _MAX_CHANGED_PATHS:
+                        truncated = True
+                        return
+                    if item_exp != item_act:
+                        walk(item_exp, item_act, prefix + [str(index)])
+        else:
+            add(prefix)
+
+    walk(expected, actual, [])
+    return tuple(paths), truncated
 
 
 def _call_type(event: Event) -> EventType:

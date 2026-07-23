@@ -1098,11 +1098,14 @@ def test_replay_cli_rejects_invalid_project_config(
     assert "Invalid project configuration" in capsys.readouterr().err
 
 
-def test_replay_cli_keeps_cassette_path_required() -> None:
-    with pytest.raises(SystemExit) as raised:
-        build_parser().parse_args(["replay"])
+def test_replay_cli_keeps_cassette_path_required(capsys: pytest.CaptureFixture[str]) -> None:
+    # The positional path is now optional at the argparse layer (``--name`` is the
+    # alternative), but replay with neither a path nor a name is still a usage error
+    # (exit 2) — the legacy "a cassette is required" guarantee is preserved.
+    from agent_cassette.cli import main
 
-    assert raised.value.code == 2
+    assert main(["replay"]) == 2
+    assert "requires a cassette path or --name" in capsys.readouterr().err
 
 
 def test_generated_smoke_test_records_and_replays_offline(
