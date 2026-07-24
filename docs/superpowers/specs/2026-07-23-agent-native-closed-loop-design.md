@@ -75,6 +75,19 @@ explicit wrapper, never falsely automatic); and stable coded blockers. A missing
 schema, owned-file rules, capture-coverage limits, safety guarantees), plus the current status
 summary when a config exists, and stays useful uninitialized.
 
+All Phase E project filesystem access (cassette, report, manifest, workflow, and
+project-owned temporaries) goes through one secure directory-FD / no-follow layer
+(`secure_fs.py`) composed from the `project_init` primitives — never a path-based
+`open`/`mkdir`/`read_bytes`/`unlink`/`tempfile.mkstemp`/`os.link`/`os.replace` or
+`load_events(path)`. Parents are traversed/created only with directory FDs, `O_DIRECTORY`,
+`O_NOFOLLOW`, and identity checks; files are required to be regular with `st_nlink == 1`;
+temporaries are `O_CREAT|O_EXCL|O_NOFOLLOW` mode `0o600` inside a verified directory FD;
+content is fsynced before publish and the directory after. A symlinked or swapped parent,
+a hard link, a FIFO/device, or a target that appears between preflight and commit fails
+closed with exit 2 and no out-of-project write. Status/manifest/cassette reads
+validate/count/hash the exact bytes read through the FD (`load_events_from_bytes`), never a
+re-opened path.
+
 ## 4. Named runs (`named_runs.py`)
 
 `record`/`replay` gain `--name NAME [--project PROJECT] [--report-json PATH] -- PYTHON …`; exactly
@@ -89,8 +102,14 @@ atomically (same-directory temp, fsync, replace) after validation; child stdout/
 untouched and the CLI prints only the report path plus a short outcome — never JSON mixed into child
 stdout.
 
-Named `record` is create-only: an existing golden is exit 2 without running the child. It records
-into a same-directory temporary and publishes to `<NAME>.jsonl` only when the child exits 0, the
+Child recordings are staged in a private temp directory outside the consumer tree and copied into
+the verified project cassette directory through file descriptors; the golden read for
+replay/rerecord is snapshotted once through the FD layer (rejecting non-regular/multi-link) and
+never reopened by path. Named `record` is create-only: an existing golden is exit 2 without running
+the child, and the create-only publish (`os.link`) also fails closed if a golden appears during the
+run. `rerecord` snapshots the original identity and revalidates it immediately before the
+directory-relative atomic replace, preserving the old golden byte-for-byte on any failure. Named
+`record` publishes to `<NAME>.jsonl` only when the child exits 0, the
 context closes cleanly, a strict load succeeds, and at least one replayable boundary exists;
 otherwise it removes only the temp, preserves any golden, and writes `child-failed` (exit 1) or
 `invalid` (exit 2). A child exception keeps its traceback after the secret-safe report is durably
@@ -103,6 +122,14 @@ and never read or report whether credentials exist.
 
 ## 5. Structured replay success and mismatch (`replay.py`)
 
+All report indexes are **one-based**: strict divergence is the matched cassette index + 1,
+exhausted is `len(events) + 1`, strict-exit unconsumed is the first unconsumed cassette index + 1
+with that event's safe expected boundary, and non-strict no-match is `event_index=null`. Before the
+changed-path walk, both normalized inputs are detached through the exact bounded JSON copier
+(`copy_json_value`), so a hostile key/container never reaches `str`/`repr`/iteration; a non-strict
+actual value yields a value-free root difference instead of a serialization exception. `_safe_name`
+runs exact strings through the shared redaction (Bearer/URI-userinfo/secret-query) before control
+stripping/bounding, and mismatch next actions carry the real safe cassette path (no placeholder).
 `ReplayMismatchError` gains optional code-owned structured fields (`kind`/`event_index`/`expected`/
 `actual`/`changed_paths`/`changed_paths_truncated`/`match`/`remaining`); legacy message-only
 construction still works. Every mismatch path is populated (strict type/name/input, non-strict

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os as _os
 import sys
 import types
 from pathlib import Path
@@ -12,6 +13,8 @@ from pathlib import Path
 import pytest
 
 import agent_cassette.cli as cli
+from agent_cassette import Cassette as _Cassette
+from agent_cassette.events import EventType as _ET
 from agent_cassette.machine import Envelope, MachineInputError, NextAction, validate_cassette_name
 from agent_cassette.named_runs import (
     run_named_record,
@@ -27,6 +30,7 @@ from agent_cassette.project_loop import (
     run_setup,
     run_status,
 )
+from agent_cassette.replay import ReplayMismatchError, _diff_paths, _safe_name
 
 # --------------------------------------------------------------------------- #
 # Fake automatic provider (records one MODEL_CALL through the runner's patch)
@@ -614,3 +618,206 @@ def test_cli_invalid_name_emits_envelope_json(tmp_path, fake_openai):
     payload = json.loads(out)  # invalid input emits the canonical envelope (no child ran)
     assert payload["command"] == "record" and payload["ok"] is False
     assert payload["data"]["error_code"] == "invalid-name"
+
+
+# --------------------------------------------------------------------------- #
+# Secure-filesystem correction regressions (fail closed on symlink/TOCTOU)
+# --------------------------------------------------------------------------- #
+
+
+def _symlink_dir_outside(tmp_path, project_relative):
+    """Replace <project>/<relative> with a symlink to an outside directory."""
+    outside = (tmp_path / "outside").resolve()
+    outside.mkdir(exist_ok=True)
+    target = Path(project_relative)
+    if target.exists():
+        for child in target.iterdir():
+            child.unlink()
+        target.rmdir()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _os.symlink(outside, target)
+    return outside
+
+
+def test_symlinked_cassette_dir_fails_closed(tmp_path, fake_openai):
+    root = _project(tmp_path)
+    outside = _symlink_dir_outside(tmp_path, root / "tests/cassettes")
+    result = run_named_record(root, "smoke", [str(_agent_script(tmp_path))], None)
+    assert result.envelope.exit_code == 2
+    assert not any(outside.iterdir())  # nothing written outside
+    assert _Responses.live_calls == 0  # child never ran (create-only pre-check failed)
+
+
+def test_symlinked_report_dir_fails_closed(tmp_path, fake_openai):
+    root = _project(tmp_path)
+    (root / ".agent-cassette").mkdir(exist_ok=True)
+    outside = (tmp_path / "reports_out").resolve()
+    outside.mkdir()
+    _os.symlink(outside, root / ".agent-cassette/reports")
+    result = run_named_record(root, "smoke", [str(_agent_script(tmp_path))], None)
+    assert result.envelope.exit_code == 2 and result.report_path is None
+    assert not any(outside.iterdir())  # no report written outside
+    assert _Responses.live_calls == 0  # child never ran (report preflight failed)
+
+
+def test_symlink_and_hardlink_golden_rejected(tmp_path, fake_openai):
+    root = _project(tmp_path)
+    run_named_record(root, "good", [str(_agent_script(tmp_path))], None)
+    golden = root / "tests/cassettes/good.jsonl"
+    # symlinked golden
+    link = root / "tests/cassettes/linked.jsonl"
+    _os.symlink(golden, link)
+    assert (
+        run_named_replay(
+            root, "linked", [str(_agent_script(tmp_path))], None, match=None, strict=None
+        ).envelope.exit_code
+        == 2
+    )
+    # hard-linked golden (st_nlink > 1)
+    hard = root / "tests/cassettes/hard.jsonl"
+    _os.link(golden, hard)
+    assert (
+        run_named_replay(
+            root, "hard", [str(_agent_script(tmp_path))], None, match=None, strict=None
+        ).envelope.exit_code
+        == 2
+    )
+
+
+def test_mismatch_indexes_are_one_based(tmp_path):
+    path = tmp_path / "c.jsonl"
+    with _Cassette.record(path) as rec:
+        rec.add(_ET.TOOL_CALL, "a", input={"x": 1}, output="1")
+        rec.add(_ET.TOOL_CALL, "b", input={"x": 2}, output="2")
+
+    # strict divergence at step 1 -> event_index 1
+    with pytest.raises(ReplayMismatchError) as diverge:
+        with _Cassette.replay(path) as rep:
+            rep.call(_ET.TOOL_CALL, "a", {"x": 999})
+    assert diverge.value.kind == "input" and diverge.value.event_index == 1
+
+    # exhausted -> event_index len(events)+1 = 3
+    with pytest.raises(ReplayMismatchError) as exhausted:
+        with _Cassette.replay(path) as rep:
+            rep.call(_ET.TOOL_CALL, "a", {"x": 1})
+            rep.call(_ET.TOOL_CALL, "b", {"x": 2})
+            rep.call(_ET.TOOL_CALL, "c", {})
+    assert exhausted.value.kind == "exhausted" and exhausted.value.event_index == 3
+
+    # unconsumed strict exit -> first unconsumed index +1 = 1, with expected summary
+    with pytest.raises(ReplayMismatchError) as unconsumed:
+        with _Cassette.replay(path):
+            pass
+    assert unconsumed.value.kind == "unconsumed" and unconsumed.value.event_index == 1
+    assert unconsumed.value.expected == {"type": "tool_call", "name": "a"}
+
+    # non-strict no-match -> event_index null
+    with pytest.raises(ReplayMismatchError) as nomatch:
+        with _Cassette.replay(path, strict=False) as rep:
+            rep.call(_ET.TOOL_CALL, "missing", {})
+    assert nomatch.value.kind == "no-match" and nomatch.value.event_index is None
+
+
+def test_diff_paths_hostile_container_stays_structured():
+    class Hostile:
+        def __iter__(self):  # pragma: no cover - must never run
+            raise AssertionError("iterated hostile container")
+
+        def __repr__(self):  # pragma: no cover - must never run
+            raise AssertionError("repr of hostile container")
+
+    # an actual value that is not strict JSON -> value-free root diff, no exception
+    paths, truncated = _diff_paths({"a": 1}, {"a": Hostile()})
+    assert paths == (".",) and truncated is False
+
+
+def test_safe_name_redacts_secrets():
+    name = "postgres://user:sk-DSNPW@db/app?token=sk-QUERY Bearer sk-BEARER"
+    safe = _safe_name(name)
+    assert safe is not None
+    for secret in ("sk-DSNPW", "sk-QUERY", "sk-BEARER"):
+        assert secret not in safe
+
+
+def test_mismatch_next_actions_have_no_placeholder(tmp_path, fake_openai):
+    root = _project(tmp_path)
+    run_named_record(root, "smoke", [str(_agent_script(tmp_path, secret="one"))], None)
+    result = run_named_replay(
+        root, "smoke", [str(_agent_script(tmp_path, secret="two"))], None, match=None, strict=None
+    )
+    assert result.report_path is not None
+    payload = json.loads(result.report_path.read_text())
+    for action in payload["next_actions"]:
+        assert "<cassette-path>" not in action["argv"]
+    inspect = [a for a in payload["next_actions"] if a["id"] == "inspect-cassette"][0]
+    assert inspect["argv"][2].endswith("smoke.jsonl")
+
+
+# --------------------------------------------------------------------------- #
+# Second-review regressions
+# --------------------------------------------------------------------------- #
+
+
+def test_named_replay_counts_only_replayable_events(tmp_path, fake_openai):
+    from agent_cassette.events import Event
+
+    root = _project(tmp_path)
+    run_named_record(root, "smoke", [str(_agent_script(tmp_path))], None)
+    golden = root / "tests/cassettes/smoke.jsonl"
+    # raw-append an observational (non-replayable) event line to the golden
+    observational = Event(
+        id="obs",
+        timestamp="2026-01-01T00:00:00+00:00",
+        type=_ET.CUSTOM,
+        name="trace",
+        input={"n": 1},
+        output="x",
+        metadata={"_agent_cassette": {"observational": True}},
+    )
+    with golden.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(observational.to_dict()) + "\n")
+    _Responses.live_calls = 0
+    result = run_named_replay(
+        root, "smoke", [str(_agent_script(tmp_path))], None, match=None, strict=None
+    )
+    assert result.envelope.exit_code == 0
+    # only the one replayable MODEL_CALL is counted, not the observational event
+    assert result.envelope.data["replayable_events"] == 1
+    assert result.envelope.data["consumed_events"] == 1
+    assert _Responses.live_calls == 0
+
+
+def test_named_replay_corrupt_golden_is_structured_invalid(tmp_path, fake_openai):
+    root = _project(tmp_path)
+    (root / "tests/cassettes/broken.jsonl").write_text("not-json\n{also bad\n")
+    result = run_named_replay(
+        root, "broken", [str(_agent_script(tmp_path))], None, match=None, strict=None
+    )
+    assert result.envelope.exit_code == 2 and result.envelope.status == "invalid"
+    assert result.envelope.data["blockers"][0]["code"] == "cassette-invalid"
+    assert _Responses.live_calls == 0  # child never ran on an invalid golden
+
+
+def test_cli_report_json_root_is_clean_exit_two(tmp_path, fake_openai):
+    root = _project(tmp_path)
+    code, out, _ = _cli(
+        [
+            "record",
+            "--name",
+            "smoke",
+            "--project",
+            str(root),
+            "--report-json",
+            str(root),
+            "--",
+            str(_agent_script(tmp_path)),
+        ]
+    )
+    assert code == 2
+    payload = json.loads(out)  # a clean canonical envelope, not an ad-hoc error
+    assert payload["command"] == "record" and payload["ok"] is False
+
+
+def test_safe_name_survives_hostile_name():
+    hostile = "z://a/" * 70  # deep enough to make redaction fail closed
+    assert _safe_name(hostile) == "[unrenderable-name]"

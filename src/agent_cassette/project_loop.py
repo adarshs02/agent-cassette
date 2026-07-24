@@ -39,7 +39,7 @@ from agent_cassette.project_init import (
     _smoke_test,
 )
 from agent_cassette.replay import _is_replayable
-from agent_cassette.storage import load_events
+from agent_cassette.storage import load_events_from_bytes
 
 MANIFEST_DIR = ".agent-cassette"
 MANIFEST_PATH = ".agent-cassette/manifest.json"
@@ -90,6 +90,19 @@ def resolve_project_root(explicit: str | Path | None) -> Path:
         if os.path.lexists(candidate / CONFIG_NAME):
             return candidate
     return current
+
+
+def _config_present(root: Path) -> bool:
+    try:
+        root_fd = _open_absolute_directory(root)
+    except ProjectInitError:
+        return False
+    try:
+        return _read_optional_regular_at(root_fd, CONFIG_NAME) is not None
+    except ProjectInitError:
+        return False
+    finally:
+        os.close(root_fd)
 
 
 def _load_config(root: Path) -> tuple[ProjectConfig | None, tuple[str, ...]]:
@@ -397,10 +410,6 @@ def run_setup(
         )
 
 
-def _workflow_present(root: Path) -> bool:
-    return os.path.lexists(root / WORKFLOW_PATH)
-
-
 def _manifest_tracks_workflow(root_fd: int) -> bool:
     manifest = _read_manifest(root_fd)  # raises on an invalid manifest (unsafe state)
     return manifest is not None and WORKFLOW_PATH in manifest["files"]
@@ -521,7 +530,7 @@ def run_status(project: str | Path | None) -> Envelope:
         # workflow is reported through ci_ready, not folded into setup readiness.
         owns_workflow = manifest is not None and WORKFLOW_PATH in manifest.get("files", {})
         managed = _managed_files(root_fd, effective, manifest, include_ci=owns_workflow)
-        cassettes = _cassette_inventory(root, root_fd, effective, blockers)
+        cassettes = _cassette_inventory(root_fd, effective, blockers)
         workflow_current = _workflow_matches(root_fd, effective)
         readiness = _readiness(existing, manifest, managed, cassettes, workflow_current, effective)
         data = {
@@ -619,7 +628,7 @@ def _managed_files(
 
 
 def _cassette_inventory(
-    root: Path, root_fd: int, config: ProjectConfig, blockers: list[dict[str, str]]
+    root_fd: int, config: ProjectConfig, blockers: list[dict[str, str]]
 ) -> list[dict[str, Any]]:
     parts = _relative_parts(config.cassette_dir)
     parent_fd, _identities = _open_existing_components(root_fd, parts)
@@ -638,8 +647,7 @@ def _cassette_inventory(
             raw = _read_optional_regular_at_safe(parent_fd, entry)
             if raw is None:
                 continue
-            absolute = (root / config.cassette_dir / entry).absolute()
-            inventory.append(_describe_cassette(absolute, entry, raw))
+            inventory.append(_describe_cassette(entry, raw))
         return inventory
     finally:
         os.close(parent_fd)
@@ -653,14 +661,16 @@ def _read_optional_regular_at_safe(parent_fd: int, name: str) -> bytes | None:
     return None if existing is None else existing[0]
 
 
-def _describe_cassette(path: Path, entry: str, raw: bytes) -> dict[str, Any]:
+def _describe_cassette(entry: str, raw: bytes) -> dict[str, Any]:
+    # Validate/count/hash the exact bytes already read through the directory FD; never
+    # reopen the cassette by path (a swapped path could feed a different file to loader).
     name = entry[: -len(".jsonl")]
     record: dict[str, Any] = {
         "name": name,
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
     try:
-        events = load_events(path)  # fails closed on corruption
+        events = load_events_from_bytes(raw)  # fails closed on corruption
     except Exception:
         record["valid"] = False
         record["replayable_events"] = 0
@@ -748,7 +758,8 @@ def run_agent_manifest(project: str | Path | None) -> Envelope:
         ],
     }
     # Include the current status summary when a config exists, but stay useful uninitialized.
-    if os.path.lexists(root / CONFIG_NAME):
+    # Config presence is checked through the secure root FD, never os.path.lexists.
+    if _config_present(root):
         summary = run_status(project)
         data["project_status"] = {
             "status": summary.status,

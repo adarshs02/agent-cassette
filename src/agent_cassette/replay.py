@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_cassette.events import Event, EventType
+from agent_cassette.json_codec import StrictJSONError, copy_json_value
 from agent_cassette.matching import (
     DEFAULT_FUZZY_THRESHOLD,
     InputMatcher,
@@ -15,6 +16,7 @@ from agent_cassette.matching import (
     normalize_input,
     validate_fuzzy_threshold,
 )
+from agent_cassette.redaction import redact
 from agent_cassette.storage import load_events
 from agent_cassette.tools import _ToolSessionMixin
 
@@ -101,9 +103,13 @@ class Replayer(_ToolSessionMixin):
 
     def __exit__(self, exc_type: object, exc: BaseException | None, traceback: object) -> None:
         if exc is None and self.strict and self.remaining:
+            first = next(i for i in range(len(self.events)) if i not in self._consumed)
+            event = self.events[first]
             raise ReplayMismatchError(
                 f"Replay finished with {self.remaining} unconsumed event(s)",
                 kind="unconsumed",
+                event_index=first + 1,  # one-based first unconsumed cassette index
+                expected={"type": _call_type(event).value, "name": _safe_name(event.name)},
                 match=self.match,
                 remaining=self.remaining,
             )
@@ -160,7 +166,7 @@ class Replayer(_ToolSessionMixin):
                 f"Unexpected {expected_type.value} {_safe_name(name)!r} at "
                 f"step {len(self.events) + 1}; the cassette is exhausted",
                 kind="exhausted",
-                event_index=len(self.events),
+                event_index=len(self.events) + 1,  # one-based incoming step past the end
                 actual={"type": expected_type.value, "name": _safe_name(name)},
                 match=self.match,
                 remaining=self.remaining,
@@ -172,7 +178,7 @@ class Replayer(_ToolSessionMixin):
             raise ReplayMismatchError(
                 _mismatch_message(self.position + 1, divergence),
                 kind=divergence["kind"],
-                event_index=self.position,
+                event_index=self.position + 1,  # one-based matched cassette index
                 expected=divergence["expected"],
                 actual=divergence["actual"],
                 changed_paths=divergence["changed_paths"],
@@ -244,7 +250,7 @@ class Replayer(_ToolSessionMixin):
             matcher=self.matcher,
             fuzzy_threshold=self.fuzzy_threshold,
         ):
-            paths, truncated = _changed_paths(expected_input, actual_input)
+            paths, truncated = _diff_paths(expected_input, actual_input)
             return _divergence("input", expected, actual, paths, truncated)
         return None
 
@@ -262,10 +268,21 @@ _MAX_CHANGED_PATHS = 50
 
 
 def _safe_name(name: Any) -> str | None:
-    """Bound and strip control characters from a name for a machine report."""
+    """Redact secrets, then strip control characters and bound, for a machine report.
+
+    Runs the exact string through the shared redaction first, so a Bearer token, URI
+    userinfo password, or secret query value embedded in a hostile cassette/call name
+    cannot survive in an exception message, envelope, report, or next action.
+    """
     if type(name) is not str:
         return None
-    cleaned = "".join(char for char in name if char.isprintable())
+    try:
+        redacted = redact(name)
+    except Exception:
+        # A hostile name (e.g. deeply nested URIs) can make redaction fail closed; never
+        # let that abort the mismatch it is describing, and never surface the raw name.
+        return "[unrenderable-name]"
+    cleaned = "".join(char for char in redacted if char.isprintable())
     return cleaned[:200]
 
 
@@ -358,6 +375,22 @@ def _changed_paths(expected: Any, actual: Any) -> tuple[tuple[str, ...], bool]:
 
     walk(expected, actual, [])
     return tuple(paths), truncated
+
+
+def _diff_paths(expected: Any, actual: Any) -> tuple[tuple[str, ...], bool]:
+    """Detach both normalized inputs through the exact bounded JSON copier before diffing.
+
+    Guarantees the diff walk only ever sees strict JSON with exact ``str`` keys — no
+    ``str``/``repr``/iteration/conversion of a hostile key or container. If an input is not
+    strict JSON, return a value-free root difference rather than replacing the replay
+    mismatch with a serialization exception.
+    """
+    try:
+        safe_expected = copy_json_value(expected)
+        safe_actual = copy_json_value(actual)
+    except StrictJSONError:
+        return (".",), False
+    return _changed_paths(safe_expected, safe_actual)
 
 
 def _call_type(event: Event) -> EventType:

@@ -100,6 +100,23 @@ def load_events(path: str | Path) -> list[Event]:
     return events
 
 
+def load_events_from_bytes(raw: bytes, source: str | Path = "<cassette>") -> list[Event]:
+    """Parse events from trusted in-memory bytes without touching the filesystem.
+
+    Used by callers that have already read a cassette's bytes through a verified
+    directory-FD/no-follow path and must validate/count the exact same snapshot.
+    """
+    cassette_path = Path(source)
+    events: list[Event] = []
+    byte_offset = 0
+    for line_number, raw_line in enumerate(raw.splitlines(keepends=True), start=1):
+        event = _parse_event_line(cassette_path, raw_line, line_number, byte_offset)
+        if event is not None:
+            events.append(event)
+        byte_offset += len(raw_line)
+    return events
+
+
 def append_event(path: str | Path, event: Event) -> None:
     """Append and flush one event so completed calls survive process failure."""
     cassette_path = Path(path)
