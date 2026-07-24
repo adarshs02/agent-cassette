@@ -23,6 +23,7 @@ from agent_cassette.project_init import (
     _open_directory_at,
     _open_existing_components,
     _publish_file,
+    _read_stability_key,
     _relative_parts,
     _require_secure_filesystem_primitives,
 )
@@ -78,7 +79,7 @@ def _read_regular_single_link(parent_fd: int, name: str) -> tuple[bytes, tuple[i
     except OSError as error:
         raise SecureFilesystemError(f"cannot safely open {name}: {error}") from error
     try:
-        opened = os.fstat(descriptor)
+        opened = os.fstat(descriptor)  # pre-read snapshot of the opened inode
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
@@ -89,9 +90,15 @@ def _read_regular_single_link(parent_fd: int, name: str) -> tuple[bytes, tuple[i
         while True:
             chunk = os.read(descriptor, 65536)
             if not chunk:
-                # identity is the fstat of the exact inode read, not the pre-read lstat
-                return b"".join(chunks), _identity(opened)
+                break
             chunks.append(chunk)
+        # Re-fstat the SAME descriptor after EOF: an inode that gained a hard link or was
+        # rewritten in place mid-read fails closed instead of being returned as trusted.
+        final = os.fstat(descriptor)
+        if _read_stability_key(final) != _read_stability_key(opened):
+            raise SecureFilesystemError(f"{name} changed while it was being read")
+        # identity is the fstat of the exact inode read, revalidated after EOF
+        return b"".join(chunks), _identity(final)
     except OSError as error:
         raise SecureFilesystemError(f"cannot safely read {name}: {error}") from error
     finally:

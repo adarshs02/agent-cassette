@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import enum
 import io
 import json
 import os as _os
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -401,6 +403,166 @@ def test_staged_record_removes_private_staging_on_base_exception(monkeypatch, in
     assert created and all(not path.exists() for path in created)  # own staging removed
 
 
+# --------------------------------------------------------------------------- #
+# post-read stability (§ read-stability): an inode that changes DURING the read
+# (a second hard link or an in-place rewrite) fails closed, not blessed
+# --------------------------------------------------------------------------- #
+
+
+class _MidReadRace:
+    """Patch ``os.read`` so that, right after the first content read of the target inode, an
+    attacker action lands between open and EOF: either a second hard link (``mutate="link"``)
+    or an in-place append (``mutate="rewrite"``). Also tracks fds opened/closed so a test can
+    assert the read descriptor is closed even when the read fails closed. (All modules share
+    the one ``os`` module object, so patching through any module patches it globally.)"""
+
+    def __init__(
+        self, module, target: Path, *, mutate: str = "link", track_open: bool = True
+    ) -> None:
+        self.module = module
+        self.target = target
+        self.mutate = mutate
+        self.track_open = track_open  # patching os.open globally breaks run_status dir opens
+        self.extra = target.with_name(target.name + ".race")
+        self._real_read = None
+        self._real_open = None
+        self._real_close = None
+        self._ino = None
+        self.fired = False
+        self.opened: list[int] = []
+        self.closed: list[int] = []
+
+    def __enter__(self):
+        st = _os.stat(self.target)
+        self._ino = (st.st_dev, st.st_ino)
+        self._real_read = self.module.os.read
+        self._real_open = self.module.os.open
+        self._real_close = self.module.os.close
+
+        def tracking_open(*args, **kwargs):
+            fd = self._real_open(*args, **kwargs)
+            self.opened.append(fd)
+            return fd
+
+        def tracking_close(fd):
+            self.closed.append(fd)
+            return self._real_close(fd)
+
+        def racing(fd, size):
+            data = self._real_read(fd, size)
+            if not self.fired and data:
+                try:
+                    fst = _os.fstat(fd)
+                except OSError:  # pragma: no cover
+                    return data
+                if (fst.st_dev, fst.st_ino) == self._ino:
+                    self.fired = True
+                    if self.mutate == "link":
+                        _os.link(self.target, self.extra)
+                    else:
+                        fd2 = self._real_open(str(self.target), _os.O_WRONLY | _os.O_APPEND)
+                        _os.write(fd2, b"XXXX")  # bumps st_size + st_mtime_ns
+                        self._real_close(fd2)
+            return data
+
+        self.module.os.read = racing
+        self.module.os.close = tracking_close
+        if self.track_open:
+            self.module.os.open = tracking_open
+        return self
+
+    def __exit__(self, *exc):
+        self.module.os.read = self._real_read
+        self.module.os.close = self._real_close
+        self.module.os.open = self._real_open
+        return False
+
+    def read_fd_closed(self) -> bool:
+        return bool(self.opened) and set(self.opened) <= set(self.closed)
+
+
+def test_project_init_read_rejects_mid_read_hard_link(tmp_path):
+    from agent_cassette import project_init
+
+    target = (tmp_path / "f.txt").resolve()
+    target.write_bytes(b"payload-bytes")
+    parent_fd = _os.open(str(tmp_path.resolve()), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW)
+    try:
+        with _MidReadRace(project_init, target, mutate="link") as race:
+            with pytest.raises(project_init.ProjectInitError):
+                project_init._read_optional_regular_at(parent_fd, "f.txt")
+        assert race.fired
+        assert race.read_fd_closed()  # read descriptor closed on the failed read
+    finally:
+        _os.close(parent_fd)
+    assert target.read_bytes() == b"payload-bytes"  # read-only command changed nothing
+    assert race.extra.exists()  # the attacker's link is left as-is, not unlinked
+
+
+def test_secure_fs_read_rejects_mid_read_hard_link(tmp_path):
+    from agent_cassette import secure_fs
+
+    target = (tmp_path / "f.txt").resolve()
+    target.write_bytes(b"payload-bytes")
+    parent_fd = _os.open(str(tmp_path.resolve()), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW)
+    try:
+        with _MidReadRace(secure_fs, target, mutate="link") as race:
+            with pytest.raises(secure_fs.SecureFilesystemError):
+                secure_fs._read_regular_single_link(parent_fd, "f.txt")
+        assert race.fired
+        assert race.read_fd_closed()
+    finally:
+        _os.close(parent_fd)
+    assert target.read_bytes() == b"payload-bytes"
+
+
+def test_read_rejects_in_place_rewrite_during_read(tmp_path):
+    from agent_cassette import project_init
+
+    target = (tmp_path / "f.txt").resolve()
+    target.write_bytes(b"payload-bytes")
+    parent_fd = _os.open(str(tmp_path.resolve()), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW)
+    try:
+        with _MidReadRace(project_init, target, mutate="rewrite") as race:
+            with pytest.raises(project_init.ProjectInitError):
+                project_init._read_optional_regular_at(parent_fd, "f.txt")
+        assert race.fired
+        assert race.read_fd_closed()
+    finally:
+        _os.close(parent_fd)
+
+
+def test_status_mid_read_hard_linked_cassette_is_unsafe(tmp_path):
+    from agent_cassette import project_init
+
+    root = _project(tmp_path)
+    cassette = (root / "tests/cassettes/smoke.jsonl").resolve()
+    _write_valid_cassette(cassette)
+    with _MidReadRace(project_init, cassette, mutate="link", track_open=False) as race:
+        env = run_status(root)
+    assert race.fired
+    assert env.exit_code == 2 and env.status == "invalid"
+    assert "cassette-file-unsafe" in _blocker_codes(env)
+    record = {item["name"]: item for item in env.data["cassettes"]}["smoke"]
+    assert record["valid"] is False and record["replayable_events"] == 0
+    assert "sha256" not in record
+    assert env.data["readiness"]["replay_ready"] is False
+    assert cassette.read_bytes()  # untouched by the read-only command
+
+
+def test_status_mid_read_hard_linked_config_is_unsafe(tmp_path):
+    from agent_cassette import project_init
+
+    root = _project(tmp_path)
+    config = (root / ".agent-cassette.toml").resolve()
+    with _MidReadRace(project_init, config, mutate="link", track_open=False) as race:
+        env = run_status(root)
+    assert race.fired
+    assert env.exit_code == 2 and env.status == "invalid"
+    assert "config-unsafe" in _blocker_codes(env)
+    assert env.data["config"]["valid"] is False
+
+
 def test_agent_manifest_is_useful_uninitialized_and_initialized(tmp_path):
     root = (tmp_path / "p").resolve()
     root.mkdir()
@@ -483,6 +645,116 @@ def test_named_rerecord_preserves_golden_on_failure_and_changes_hash_on_success(
     assert ok.envelope.exit_code == 0 and ok.envelope.status == "changed"
     assert golden.read_bytes() != original
     assert ok.envelope.data["previous_sha256"] != ok.envelope.data["cassette"]["sha256"]
+
+
+class _BoomRecorder:
+    """A recorder context manager whose ``__enter__`` fails, standing in for a recorder
+    construction/enter failure inside the staged run."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def __enter__(self):
+        raise self._error
+
+    def __exit__(self, *exc):  # pragma: no cover - never entered
+        return False
+
+
+def _staging_tracker(monkeypatch) -> list[Path]:
+    from agent_cassette import named_runs
+
+    created: list[Path] = []
+    real = named_runs.tempfile.mkdtemp
+
+    def spy(*args, **kwargs):
+        path = real(*args, **kwargs)
+        created.append(Path(path))
+        return path
+
+    monkeypatch.setattr(named_runs.tempfile, "mkdtemp", spy)
+    return created
+
+
+def _root_fd_tracker(monkeypatch) -> tuple[list[int], list[int]]:
+    from agent_cassette import named_runs
+
+    roots: list[int] = []
+    closed: list[int] = []
+    real_open_root = named_runs.open_root
+    real_close = named_runs.os.close
+
+    def spy_open_root(root):
+        fd = real_open_root(root)
+        roots.append(fd)
+        return fd
+
+    def spy_close(fd):
+        closed.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(named_runs, "open_root", spy_open_root)
+    monkeypatch.setattr(named_runs.os, "close", spy_close)
+    return roots, closed
+
+
+def test_record_cleans_staging_on_recorder_enter_failure(tmp_path, monkeypatch):
+    from agent_cassette import named_runs
+
+    root = _project(tmp_path)
+    script = _agent_script(tmp_path)
+    sibling = Path(tempfile.mkdtemp())  # an unrelated dir that must survive
+    created = _staging_tracker(monkeypatch)
+    roots, closed = _root_fd_tracker(monkeypatch)
+    monkeypatch.setattr(
+        named_runs.Cassette,
+        "record",
+        staticmethod(lambda *a, **k: _BoomRecorder(RuntimeError("enter boom"))),
+    )
+    result = run_named_record(root, "smoke", [str(script)], None)
+    assert result.envelope.status == "child-failed"  # ordinary Exception, not swallowed
+    assert created and all(not path.exists() for path in created)  # own staging removed
+    assert sibling.exists()  # unrelated sibling untouched
+    assert roots and set(roots) <= set(closed)  # owned root descriptor closed
+    assert not (root / "tests/cassettes/smoke.jsonl").exists()
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_record_reraises_and_cleans_staging_on_recorder_enter_base_exception(
+    tmp_path, monkeypatch, interrupt
+):
+    from agent_cassette import named_runs
+
+    root = _project(tmp_path)
+    script = _agent_script(tmp_path)
+    created = _staging_tracker(monkeypatch)
+    roots, closed = _root_fd_tracker(monkeypatch)
+    monkeypatch.setattr(
+        named_runs.Cassette,
+        "record",
+        staticmethod(lambda *a, **k: _BoomRecorder(interrupt())),
+    )
+    with pytest.raises(interrupt):  # BaseException from enter is re-raised, never swallowed
+        run_named_record(root, "smoke", [str(script)], None)
+    assert created and all(not path.exists() for path in created)  # staging removed
+    assert roots and set(roots) <= set(closed)  # root descriptor still closed on the way out
+
+
+def test_rerecord_validation_failure_preserves_golden_and_cleans_staging(
+    tmp_path, fake_openai, monkeypatch
+):
+    root = _project(tmp_path)
+    run_named_record(root, "smoke", [str(_agent_script(tmp_path, secret="one"))], None)
+    golden = root / "tests/cassettes/smoke.jsonl"
+    original = golden.read_bytes()
+
+    noop = tmp_path / "noop.py"
+    noop.write_text("pass\n")  # records nothing -> staged validation fails
+    created = _staging_tracker(monkeypatch)
+    result = run_named_rerecord(root, "smoke", [str(noop)], None)
+    assert result.envelope.status == "invalid"
+    assert golden.read_bytes() == original  # golden byte-identical after a validation failure
+    assert created and all(not path.exists() for path in created)  # staging cleaned
 
 
 def test_named_replay_structured_mismatch(tmp_path, fake_openai):
@@ -851,26 +1123,40 @@ def test_mismatch_indexes_are_one_based(tmp_path):
 @pytest.mark.parametrize(
     "hostile_factory",
     [
-        lambda: _HostileDict({"k": 1}),
-        lambda: _HostileList([1]),
-        lambda: {_HostileKey(): 1},
+        lambda: _HostileDict({"k": 1}),  # dict subclass with hostile items()/__iter__
+        lambda: _HostileList([1]),  # list subclass with hostile __iter__
+        lambda: {_HostileKey(): 1},  # non-str key with hostile __str__/__repr__
+        lambda: _PlainDict({"a": 1}),  # benign dict subclass — still exact-type rejected
+        lambda: _PlainList([1]),  # benign list subclass — still exact-type rejected
+        lambda: _StrSub("a"),  # scalar (str) subclass
+        lambda: _Weekday.MON,  # IntEnum (int subclass)
         lambda: (1, 2),  # tuple
-        lambda: {"n": float("nan")},  # non-finite
-        lambda: _make_cycle(),
-        lambda: _make_deep(),
+        lambda: {"n": float("nan")},  # non-finite (NaN)
+        lambda: {"n": float("inf")},  # non-finite (Inf)
+        lambda: _make_cycle(),  # reference cycle
+        lambda: _make_deep(),  # depth overflow
     ],
 )
 def test_replay_call_hostile_actual_stays_structured(tmp_path, hostile_factory):
-    """A hostile incoming input yields ReplayMismatchError(kind=input, changed_paths=('.',))
-    with no hostile method/callback run and the event left unconsumed."""
+    """A hostile/non-exact incoming input yields ReplayMismatchError(kind=input,
+    changed_paths=('.',), remaining=1) with NO hostile method and NO custom matcher run,
+    the event left unconsumed, and no payload in the rendered error."""
+
+    def forbidden_matcher(expected, actual):  # pragma: no cover - must never run
+        raise AssertionError("custom matcher ran on an untrusted input")
+
     path = tmp_path / "c.jsonl"
     with _Cassette.record(path) as rec:
         rec.add(_ET.TOOL_CALL, "t", input={"a": 1}, output="1")
+    # strict positional match -> kind="input"; the raised mismatch propagates through the
+    # replay context exit (exc is not None) so __exit__ never re-raises for the unconsumed
+    # event. The matcher sentinel proves the custom matcher is never reached.
     with pytest.raises(ReplayMismatchError) as raised:
-        with _Cassette.replay(path) as rep:
+        with _Cassette.replay(path, matcher=forbidden_matcher) as rep:
             rep.call(_ET.TOOL_CALL, "t", hostile_factory())
-            assert rep.remaining == 1  # event not consumed on mismatch
-    assert raised.value.kind == "input" and raised.value.changed_paths == (".",)
+    assert raised.value.kind == "input"
+    assert raised.value.changed_paths == (".",)
+    assert raised.value.remaining == 1  # event NOT consumed by the failed match
     assert "secret" not in str(raised.value)
 
 
@@ -896,6 +1182,22 @@ class _HostileKey:
 
     def __repr__(self):  # pragma: no cover - must never run
         raise AssertionError("hostile key __repr__ ran")
+
+
+class _PlainDict(dict):
+    """A benign dict subclass: exact-type detachment must reject it without iterating."""
+
+
+class _PlainList(list):
+    """A benign list subclass: exact-type detachment must reject it without iterating."""
+
+
+class _StrSub(str):
+    """A scalar (str) subclass: not exact JSON, must be rejected by type."""
+
+
+class _Weekday(enum.IntEnum):
+    MON = 1
 
 
 def _make_cycle():
