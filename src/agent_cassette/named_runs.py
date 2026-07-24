@@ -591,16 +591,24 @@ def run_named_rerecord(
 
 
 def _staged_record(arguments: list[str]) -> tuple[Path, int | None, BaseException | None]:
+    # The helper OWNS its private staging directory until it successfully hands `staged`
+    # back to the caller. A BaseException (KeyboardInterrupt/SystemExit) during child
+    # execution or recorder enter/exit removes the exact directory and re-raises, so no
+    # staging is left behind; only an ordinary child Exception is captured and returned.
     staging = Path(tempfile.mkdtemp(prefix="agent-cassette-record-"))  # mode 0o700
-    staged = staging / "cassette.jsonl"
-    child_status: int | None = None
-    child_exception: BaseException | None = None
     try:
-        with Cassette.record(staged) as recorder:
-            child_status = run_python(arguments, recorder)
-    except Exception as error:  # child code raised
-        child_exception = error
-    return staged, child_status, child_exception
+        staged = staging / "cassette.jsonl"
+        child_status: int | None = None
+        child_exception: BaseException | None = None
+        try:
+            with Cassette.record(staged) as recorder:
+                child_status = run_python(arguments, recorder)
+        except Exception as error:  # ordinary child code failure
+            child_exception = error
+        return staged, child_status, child_exception
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def _staged_replay(

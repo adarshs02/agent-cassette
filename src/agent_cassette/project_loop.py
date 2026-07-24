@@ -480,7 +480,11 @@ def _read_relative(root_fd: int, relative: str) -> bytes | None:
 
 
 def _read_manifest(root_fd: int) -> dict[str, Any] | None:
-    raw = _read_relative(root_fd, MANIFEST_PATH)
+    try:
+        raw = _read_relative(root_fd, MANIFEST_PATH)
+    except ProjectInitError as error:
+        # A symlinked/hard-linked/non-regular manifest is an unsafe state, not a parse error.
+        raise ProjectLoopError("manifest is not a safe regular file") from error
     if raw is None:
         return None
     try:
@@ -529,9 +533,9 @@ def run_status(project: str | Path | None) -> Envelope:
         # managed files are the setup-owned set (from the manifest); a standalone `ci`
         # workflow is reported through ci_ready, not folded into setup readiness.
         owns_workflow = manifest is not None and WORKFLOW_PATH in manifest.get("files", {})
-        managed = _managed_files(root_fd, effective, manifest, include_ci=owns_workflow)
+        managed = _managed_files(root_fd, effective, manifest, blockers, include_ci=owns_workflow)
         cassettes = _cassette_inventory(root_fd, effective, blockers)
-        workflow_current = _workflow_matches(root_fd, effective)
+        workflow_current = _workflow_matches(root_fd, effective, blockers)
         readiness = _readiness(existing, manifest, managed, cassettes, workflow_current, effective)
         data = {
             "config": {
@@ -557,7 +561,7 @@ def run_status(project: str | Path | None) -> Envelope:
             "cassettes": cassettes,
             "capture_coverage": _capture_coverage(effective),
             "readiness": readiness,
-            "blockers": sorted(blockers, key=lambda item: (item["code"], item.get("path", ""))),
+            "blockers": _unique_blockers(blockers),
         }
     finally:
         os.close(root_fd)
@@ -580,13 +584,40 @@ def run_status(project: str | Path | None) -> Envelope:
     )
 
 
-_INVALID_BLOCKERS = frozenset({"config-invalid", "manifest-invalid", "cassette-dir-unsafe"})
+def _unique_blockers(blockers: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, str]] = []
+    for blocker in blockers:
+        key = (blocker["code"], blocker.get("path", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(blocker)
+    return sorted(unique, key=lambda item: (item["code"], item.get("path", "")))
+
+
+_INVALID_BLOCKERS = frozenset(
+    {
+        "config-invalid",
+        "config-unsafe",
+        "manifest-invalid",
+        "cassette-dir-unsafe",
+        "cassette-file-unsafe",
+        "managed-file-unsafe",
+        "workflow-unsafe",
+    }
+)
 
 
 def _load_config_status(
     root_fd: int, blockers: list[dict[str, str]]
 ) -> tuple[ProjectConfig | None, tuple[str, ...], bool]:
-    existing = _read_optional_regular_at(root_fd, CONFIG_NAME)
+    try:
+        existing = _read_optional_regular_at(root_fd, CONFIG_NAME)
+    except ProjectInitError:
+        # A symlinked/hard-linked/non-regular config cannot be trusted; never read it.
+        blockers.append({"code": "config-unsafe", "path": CONFIG_NAME})
+        return None, (), False
     if existing is None:
         return None, (), True
     try:
@@ -606,12 +637,24 @@ def _detected_config(detected: dict[str, list[str]]) -> ProjectConfig:
 
 
 def _managed_files(
-    root_fd: int, config: ProjectConfig, manifest: dict[str, Any] | None, *, include_ci: bool
+    root_fd: int,
+    config: ProjectConfig,
+    manifest: dict[str, Any] | None,
+    blockers: list[dict[str, str]],
+    *,
+    include_ci: bool,
 ) -> dict[str, dict[str, str]]:
     recorded = manifest["files"] if manifest else {}
     result: dict[str, dict[str, str]] = {}
     for relative, kind, _content in _owned_files(config, include_ci=include_ci):
-        on_disk = _read_relative(root_fd, relative)
+        try:
+            on_disk = _read_relative(root_fd, relative)
+        except ProjectInitError:
+            # A symlinked/hard-linked managed file is never adopted as "current"; setup's
+            # apply fails closed on it. Report it, don't silently drop it.
+            blockers.append({"code": "managed-file-unsafe", "path": relative})
+            result[relative] = {"kind": kind, "state": "modified"}
+            continue
         recorded_sha = (
             recorded.get(relative, {}).get("sha256") if isinstance(recorded, dict) else None
         )
@@ -644,21 +687,22 @@ def _cassette_inventory(
         for entry in names:
             if not entry.endswith(".jsonl"):
                 continue
-            raw = _read_optional_regular_at_safe(parent_fd, entry)
-            if raw is None:
+            try:
+                existing = _read_optional_regular_at(parent_fd, entry)
+            except ProjectInitError:
+                # A symlinked/hard-linked cassette cannot be trusted; record it as invalid
+                # (no hash, zero replayable events) and block, never silently omit it.
+                blockers.append({"code": "cassette-file-unsafe", "path": "/".join((*parts, entry))})
+                inventory.append(
+                    {"name": entry[: -len(".jsonl")], "valid": False, "replayable_events": 0}
+                )
                 continue
-            inventory.append(_describe_cassette(entry, raw))
+            if existing is None:
+                continue
+            inventory.append(_describe_cassette(entry, existing[0]))
         return inventory
     finally:
         os.close(parent_fd)
-
-
-def _read_optional_regular_at_safe(parent_fd: int, name: str) -> bytes | None:
-    try:
-        existing = _read_optional_regular_at(parent_fd, name)
-    except ProjectInitError:
-        return None
-    return None if existing is None else existing[0]
 
 
 def _describe_cassette(entry: str, raw: bytes) -> dict[str, Any]:
@@ -689,8 +733,12 @@ def _capture_coverage(config: ProjectConfig) -> dict[str, Any]:
     return {"automatic": automatic, "requires_explicit_integration": explicit}
 
 
-def _workflow_matches(root_fd: int, config: ProjectConfig) -> bool:
-    on_disk = _read_relative(root_fd, WORKFLOW_PATH)
+def _workflow_matches(root_fd: int, config: ProjectConfig, blockers: list[dict[str, str]]) -> bool:
+    try:
+        on_disk = _read_relative(root_fd, WORKFLOW_PATH)
+    except ProjectInitError:
+        blockers.append({"code": "workflow-unsafe", "path": WORKFLOW_PATH})
+        return False
     return on_disk is not None and on_disk == _render_workflow(config).encode("utf-8")
 
 

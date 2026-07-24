@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from agent_cassette.events import Event, EventType
-from agent_cassette.json_codec import StrictJSONError, copy_json_value
+from agent_cassette.integrations._serialization import serialize_recorded_value
+from agent_cassette.json_codec import StrictJSONError
 from agent_cassette.matching import (
     DEFAULT_FUZZY_THRESHOLD,
     InputMatcher,
@@ -241,8 +242,20 @@ class Replayer(_ToolSessionMixin):
             return _divergence("type", expected, actual)
         if event.name != name:
             return _divergence("name", expected, actual)
-        expected_input = normalize_input(event.input, self.ignore_paths)
-        actual_input = normalize_input(input, self.ignore_paths)
+        # Exact-detach BOTH inputs BEFORE normalize/match/matcher/changed-paths.
+        # serialize_recorded_value is exact-type (type(x) is dict/list/str/...): a hostile
+        # incoming dict/list subclass or non-str key is rejected WITHOUT ever calling its
+        # items()/__iter__/__str__/__repr__/conversion, so no hostile method runs.
+        try:
+            safe_recorded = serialize_recorded_value(event.input)
+        except StrictJSONError:  # a valid cassette should never hit this; fail closed
+            return _divergence("input", expected, actual, (".",), False)
+        try:
+            safe_incoming = serialize_recorded_value(input)
+        except StrictJSONError:
+            return _divergence("input", expected, actual, (".",), False)
+        expected_input = normalize_input(safe_recorded, self.ignore_paths)
+        actual_input = normalize_input(safe_incoming, self.ignore_paths)
         if not inputs_match(
             expected_input,
             actual_input,
@@ -250,7 +263,7 @@ class Replayer(_ToolSessionMixin):
             matcher=self.matcher,
             fuzzy_threshold=self.fuzzy_threshold,
         ):
-            paths, truncated = _diff_paths(expected_input, actual_input)
+            paths, truncated = _changed_paths(expected_input, actual_input)
             return _divergence("input", expected, actual, paths, truncated)
         return None
 
@@ -375,22 +388,6 @@ def _changed_paths(expected: Any, actual: Any) -> tuple[tuple[str, ...], bool]:
 
     walk(expected, actual, [])
     return tuple(paths), truncated
-
-
-def _diff_paths(expected: Any, actual: Any) -> tuple[tuple[str, ...], bool]:
-    """Detach both normalized inputs through the exact bounded JSON copier before diffing.
-
-    Guarantees the diff walk only ever sees strict JSON with exact ``str`` keys — no
-    ``str``/``repr``/iteration/conversion of a hostile key or container. If an input is not
-    strict JSON, return a value-free root difference rather than replacing the replay
-    mismatch with a serialization exception.
-    """
-    try:
-        safe_expected = copy_json_value(expected)
-        safe_actual = copy_json_value(actual)
-    except StrictJSONError:
-        return (".",), False
-    return _changed_paths(safe_expected, safe_actual)
 
 
 def _call_type(event: Event) -> EventType:

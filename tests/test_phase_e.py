@@ -30,7 +30,7 @@ from agent_cassette.project_loop import (
     run_setup,
     run_status,
 )
-from agent_cassette.replay import ReplayMismatchError, _diff_paths, _safe_name
+from agent_cassette.replay import ReplayMismatchError, _safe_name
 
 # --------------------------------------------------------------------------- #
 # Fake automatic provider (records one MODEL_CALL through the runner's patch)
@@ -269,6 +269,136 @@ def test_status_corrupt_config_is_invalid(tmp_path):
     (root / ".agent-cassette.toml").write_text("this is = not valid = toml\n")
     env = run_status(root)
     assert env.exit_code == 2 and env.status == "invalid"
+
+
+# --------------------------------------------------------------------------- #
+# status single-link trust invariant (§3): no unsafe file is blessed or omitted
+# --------------------------------------------------------------------------- #
+
+
+def _write_valid_cassette(path: Path) -> None:
+    with _Cassette.record(path) as recorder:
+        recorder.add(_ET.MODEL_CALL, "openai", input={"q": 1}, output={"a": 2})
+
+
+def _blocker_codes(env) -> set[str]:
+    return {blocker["code"] for blocker in env.data["blockers"]}
+
+
+def test_status_hard_linked_cassette_is_unsafe_not_blessed(tmp_path):
+    root = _project(tmp_path)
+    outside = tmp_path / "outside.jsonl"
+    _write_valid_cassette(outside)  # valid bytes, but...
+    _os.link(outside, root / "tests/cassettes/smoke.jsonl")  # ...st_nlink == 2
+    env = run_status(root)
+    assert env.exit_code == 2 and env.status == "invalid"
+    assert "cassette-file-unsafe" in _blocker_codes(env)
+    record = {item["name"]: item for item in env.data["cassettes"]}["smoke"]
+    assert record["valid"] is False and record["replayable_events"] == 0
+    assert "sha256" not in record  # never hash an untrusted inode
+    assert env.data["readiness"]["replay_ready"] is False
+
+
+def test_status_symlinked_cassette_is_unsafe(tmp_path):
+    root = _project(tmp_path)
+    target = tmp_path / "real.jsonl"
+    _write_valid_cassette(target)
+    _os.symlink(target, root / "tests/cassettes/smoke.jsonl")
+    env = run_status(root)
+    assert env.exit_code == 2 and env.status == "invalid"
+    assert "cassette-file-unsafe" in _blocker_codes(env)
+    assert env.data["readiness"]["replay_ready"] is False
+
+
+def test_status_hard_linked_config_is_unsafe(tmp_path):
+    root = _project(tmp_path)
+    _os.link(root / ".agent-cassette.toml", tmp_path / "dup.toml")  # config st_nlink == 2
+    env = run_status(root)
+    assert env.exit_code == 2 and env.status == "invalid"
+    assert "config-unsafe" in _blocker_codes(env)
+    assert env.data["config"]["valid"] is False
+
+
+def test_status_hard_linked_manifest_is_unsafe(tmp_path):
+    root = _project(tmp_path)
+    _os.link(root / MANIFEST_PATH, tmp_path / "dup-manifest.json")  # manifest st_nlink == 2
+    env = run_status(root)
+    assert env.exit_code == 2 and env.status == "invalid"
+    assert "manifest-invalid" in _blocker_codes(env)
+
+
+def test_status_hard_linked_managed_file_is_modified_not_current(tmp_path):
+    root = _project(tmp_path)
+    smoke = "tests/test_agent_cassette_smoke.py"
+    _os.link(root / smoke, tmp_path / "dup_smoke.py")  # managed file st_nlink == 2
+    env = run_status(root)
+    assert env.exit_code == 2 and env.status == "invalid"
+    blockers = {blocker["code"]: blocker for blocker in env.data["blockers"]}
+    assert blockers["managed-file-unsafe"]["path"] == smoke
+    assert env.data["managed_files"][smoke]["state"] == "modified"  # never adopted
+    assert env.data["readiness"]["setup_ready"] is False
+
+
+def test_status_symlinked_workflow_is_unsafe(tmp_path):
+    root = _project(tmp_path)
+    workflow = root / WORKFLOW_PATH
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "evil.yml"
+    target.write_text("evil\n")
+    _os.symlink(target, workflow)
+    env = run_status(root)
+    assert env.exit_code == 2 and env.status == "invalid"
+    assert "workflow-unsafe" in _blocker_codes(env)
+
+
+@pytest.mark.skipif(not hasattr(_os, "mkfifo"), reason="requires POSIX FIFO")
+def test_status_fifo_cassette_is_unsafe_and_deterministic(tmp_path):
+    root = _project(tmp_path)
+    _os.mkfifo(root / "tests/cassettes/weird.jsonl")  # a .jsonl that is not a regular file
+    env = run_status(root)  # must return, never block on the FIFO
+    assert env.exit_code == 2 and env.status == "invalid"
+    assert "cassette-file-unsafe" in _blocker_codes(env)
+    record = {item["name"]: item for item in env.data["cassettes"]}["weird"]
+    assert record["valid"] is False and "sha256" not in record
+
+
+@pytest.mark.skipif(not hasattr(_os, "mkfifo"), reason="requires POSIX FIFO")
+def test_status_non_cassette_special_file_is_ignored(tmp_path):
+    root = _project(tmp_path)
+    _write_valid_cassette(root / "tests/cassettes/smoke.jsonl")
+    _os.mkfifo(root / "tests/cassettes/scratch.fifo")  # not .jsonl → skipped, non-blocking
+    env = run_status(root)
+    assert "cassette-file-unsafe" not in _blocker_codes(env)
+    assert {item["name"] for item in env.data["cassettes"]} == {"smoke"}
+
+
+# --------------------------------------------------------------------------- #
+# private staging cleanup (§2): every BaseException removes only its own staging
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_staged_record_removes_private_staging_on_base_exception(monkeypatch, interrupt):
+    from agent_cassette import named_runs
+
+    created: list[Path] = []
+    real_mkdtemp = named_runs.tempfile.mkdtemp
+
+    def spy_mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        created.append(Path(path))
+        return path
+
+    def interrupt_child(*_args, **_kwargs):
+        raise interrupt
+
+    monkeypatch.setattr(named_runs.tempfile, "mkdtemp", spy_mkdtemp)
+    monkeypatch.setattr(named_runs, "run_python", interrupt_child)
+
+    with pytest.raises(interrupt):  # BaseException is never swallowed
+        named_runs._staged_record(["agent.py"])
+
+    assert created and all(not path.exists() for path in created)  # own staging removed
 
 
 def test_agent_manifest_is_useful_uninitialized_and_initialized(tmp_path):
@@ -718,17 +848,70 @@ def test_mismatch_indexes_are_one_based(tmp_path):
     assert nomatch.value.kind == "no-match" and nomatch.value.event_index is None
 
 
-def test_diff_paths_hostile_container_stays_structured():
-    class Hostile:
-        def __iter__(self):  # pragma: no cover - must never run
-            raise AssertionError("iterated hostile container")
+@pytest.mark.parametrize(
+    "hostile_factory",
+    [
+        lambda: _HostileDict({"k": 1}),
+        lambda: _HostileList([1]),
+        lambda: {_HostileKey(): 1},
+        lambda: (1, 2),  # tuple
+        lambda: {"n": float("nan")},  # non-finite
+        lambda: _make_cycle(),
+        lambda: _make_deep(),
+    ],
+)
+def test_replay_call_hostile_actual_stays_structured(tmp_path, hostile_factory):
+    """A hostile incoming input yields ReplayMismatchError(kind=input, changed_paths=('.',))
+    with no hostile method/callback run and the event left unconsumed."""
+    path = tmp_path / "c.jsonl"
+    with _Cassette.record(path) as rec:
+        rec.add(_ET.TOOL_CALL, "t", input={"a": 1}, output="1")
+    with pytest.raises(ReplayMismatchError) as raised:
+        with _Cassette.replay(path) as rep:
+            rep.call(_ET.TOOL_CALL, "t", hostile_factory())
+            assert rep.remaining == 1  # event not consumed on mismatch
+    assert raised.value.kind == "input" and raised.value.changed_paths == (".",)
+    assert "secret" not in str(raised.value)
 
-        def __repr__(self):  # pragma: no cover - must never run
-            raise AssertionError("repr of hostile container")
 
-    # an actual value that is not strict JSON -> value-free root diff, no exception
-    paths, truncated = _diff_paths({"a": 1}, {"a": Hostile()})
-    assert paths == (".",) and truncated is False
+class _HostileDict(dict):
+    def items(self):  # pragma: no cover - must never run
+        raise AssertionError("hostile dict items() ran")
+
+    def __iter__(self):  # pragma: no cover
+        raise AssertionError("hostile dict __iter__ ran")
+
+
+class _HostileList(list):
+    def __iter__(self):  # pragma: no cover - must never run
+        raise AssertionError("hostile list __iter__ ran")
+
+
+class _HostileKey:
+    def __hash__(self):
+        return 0
+
+    def __str__(self):  # pragma: no cover - must never run
+        raise AssertionError("hostile key __str__ ran")
+
+    def __repr__(self):  # pragma: no cover - must never run
+        raise AssertionError("hostile key __repr__ ran")
+
+
+def _make_cycle():
+    d: dict = {}
+    d["self"] = d
+    return d
+
+
+def _make_deep():
+    root: dict = {}
+    current = root
+    for _ in range(200):
+        child: dict = {}
+        current["x"] = child
+        current = child
+    return root
 
 
 def test_safe_name_redacts_secrets():

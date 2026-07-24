@@ -1054,6 +1054,8 @@ def _read_optional_regular_at(parent_fd: int, name: str) -> tuple[bytes, tuple[i
         raise ProjectInitError(f"cannot safely inspect {name}: {error}") from error
     if not stat.S_ISREG(before.st_mode):
         raise ProjectInitError(f"{name} is not a regular file")
+    if before.st_nlink != 1:
+        raise ProjectInitError(f"{name} is a hard link")
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         descriptor = os.open(name, flags, dir_fd=parent_fd)
@@ -1061,7 +1063,11 @@ def _read_optional_regular_at(parent_fd: int, name: str) -> tuple[bytes, tuple[i
         raise ProjectInitError(f"cannot safely open {name}: {error}") from error
     try:
         file_stat = os.fstat(descriptor)
-        if not stat.S_ISREG(file_stat.st_mode) or _identity(before) != _identity(file_stat):
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_nlink != 1
+            or _identity(before) != _identity(file_stat)
+        ):
             raise ProjectInitError(f"{name} changed while it was being opened")
         chunks: list[bytes] = []
         while True:

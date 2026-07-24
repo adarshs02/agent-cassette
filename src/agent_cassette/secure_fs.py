@@ -114,7 +114,11 @@ def snapshot(root_fd: int, relative: str) -> tuple[bytes, tuple[int, int]] | Non
 
 
 def identity_of(root_fd: int, relative: str) -> tuple[int, int] | None:
-    """Return the (dev, ino) identity of a project-relative regular file, or None."""
+    """Return the (dev, ino) identity of a project-relative regular single-link file.
+
+    Returns None if absent. Opens the target ``O_NOFOLLOW`` and fstats it, rejecting a
+    symlink, hard link (``st_nlink > 1``), non-regular object, or an in-inspection
+    type/identity change (fail closed → exit 2)."""
     parts = _relative_parts(relative)
     try:
         parent_fd, _identities = _open_existing_components(root_fd, parts[:-1])
@@ -122,15 +126,31 @@ def identity_of(root_fd: int, relative: str) -> tuple[int, int] | None:
         raise SecureFilesystemError(str(error)) from error
     if parent_fd is None:
         return None
+    name = parts[-1]
     try:
-        stats = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return None
+        before = _lstat_optional(parent_fd, name)
+        if before is None:
+            return None
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise SecureFilesystemError(f"{relative} is not a regular single-link file")
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            descriptor = os.open(name, flags, dir_fd=parent_fd)
+        except OSError as error:
+            raise SecureFilesystemError(f"cannot safely open {relative}: {error}") from error
+        try:
+            opened = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _identity(before) != _identity(opened)
+        ):
+            raise SecureFilesystemError(f"{relative} changed while it was being inspected")
+        return _identity(opened)
     finally:
         os.close(parent_fd)
-    if not stat.S_ISREG(stats.st_mode):
-        raise SecureFilesystemError(f"{relative} is not a regular file")
-    return _identity(stats)
 
 
 def _ensure_dir_fd(root_fd: int, parts: tuple[str, ...]) -> int:
