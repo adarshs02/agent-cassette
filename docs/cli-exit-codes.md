@@ -12,6 +12,13 @@ Child program nonzero statuses are normalized to `1`; Agent Cassette reserves `2
 for its own usage/data failures. Signals and unhandled Agent Cassette programming
 defects are not converted into expected errors.
 
+The Phase E agent-native commands (`setup`, `status`, `agent-manifest`, named
+`record`/`replay`/`rerecord`, `ci`) follow the same codes and set `exit_code` in their JSON
+envelope to match the process result: `0` for success/current/dry-run, `1` for a check that needs
+changes / a replay mismatch / a nonzero child, and `2` for invalid input, an invalid config or
+cassette, a conflict (a managed file whose bytes differ), or an unsafe filesystem state. Named
+`record` on an existing golden and a report/cassette path that escapes the project are `2`.
+
 Human-mode expected errors are concise on stderr with no traceback. For a command
 that supports `--json`, success and expected failure each emit one valid JSON object
 on stdout and leave stderr empty. Argparse errors retain argparse's standard stderr

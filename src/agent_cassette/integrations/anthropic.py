@@ -21,6 +21,7 @@ ANTHROPIC_SPEC = ProviderSpec(
     provider="anthropic",
     operations=frozenset({"messages.create"}),
     prefixes=frozenset({"messages"}),
+    trusted_roots=("anthropic",),
     unsupported_operations={
         "messages.stream": (
             "The anthropic messages.stream helper is not replay-safe; "

@@ -15,8 +15,10 @@ _MINIMUM_PYTHON = (3, 10)
 
 _INTEGRATIONS = (
     ("Anthropic", "anthropic", "anthropic", "optional"),
+    ("Gemini", "google-genai", "google.genai", "optional"),
     ("LangChain", "langchain-core", "langchain_core", "optional"),
     ("MCP", "mcp", "mcp", "built-in"),
+    ("Mistral", "mistralai", "mistralai", "optional"),
     ("OpenAI", "openai", "openai", "optional"),
     ("OpenAI Agents", "openai-agents", "agents", "optional"),
 )

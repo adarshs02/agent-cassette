@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-cassette"
-version = "1.0.0"
+version = "1.1.0"
 description = "Deterministic record, replay, and trajectory diffing for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -60,6 +60,11 @@ agent_cassette = "agent_cassette.pytest_plugin"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_cassette"]
+
+[tool.hatch.build.targets.sdist]
+# Ship source, docs, tests, and packaging metadata; never the machine-local agent/editor
+# tooling directories (also git-ignored). Keeps internal SDD process artifacts out of PyPI.
+exclude = [".superpowers", ".agents", ".codegraph", ".claude"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

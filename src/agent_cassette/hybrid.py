@@ -13,6 +13,7 @@ from agent_cassette.events import Event, EventType
 from agent_cassette.matching import DEFAULT_FUZZY_THRESHOLD, InputMatcher, MatchMode
 from agent_cassette.recorder import Recorder
 from agent_cassette.replay import RateLimitError, Replayer, ReplayMismatchError
+from agent_cassette.tools import _ToolSessionMixin
 
 __all__ = [
     "Delay",
@@ -116,7 +117,7 @@ class InjectionRule:
         object.__setattr__(self, "occurrence", occurrence)
 
 
-class Hybrid:
+class Hybrid(_ToolSessionMixin):
     """Replay a source prefix, then permanently record live execution to a new cassette."""
 
     def __init__(
@@ -226,8 +227,16 @@ class Hybrid:
         metadata: dict[str, Any] | None = None,
         serializer: Callable[[Any], Any] | None = None,
         error_serializer: Callable[[Exception], Any] | None = None,
+        defer_errors: bool = False,
     ) -> tuple[bool, Any]:
-        """Replay or inject a stream payload, or signal that a live stream is required."""
+        """Replay or inject a stream payload, or signal that a live stream is required.
+
+        When ``defer_errors`` is true, an injected ``Raise`` is recorded and its
+        serialized payload returned as a replayable result (so the caller raises
+        it on first iteration) instead of being raised here at preparation time.
+        Existing (provider/LangChain) callers pass ``defer_errors=False`` and keep
+        the raise-at-preparation behavior.
+        """
         normalized_type = self._event_type(event_type)
         injection = self._select_injection(normalized_type, name)
         if injection is not None:
@@ -271,6 +280,8 @@ class Hybrid:
                     metadata=error_metadata,
                     duration_ms=0.0,
                 )
+                if defer_errors:
+                    return True, serialized_error
                 raise error
             self.recorder.call(
                 normalized_type,
@@ -310,6 +321,7 @@ class Hybrid:
         metadata: dict[str, Any] | None = None,
         cost: float | None = None,
         serializer: Callable[[Result], Any] | None = None,
+        error_serializer: Callable[[BaseException], Any] | None = None,
     ) -> Result:
         """Replay, inject, or execute one synchronous call and record the outcome."""
         normalized_type = self._event_type(event_type)
@@ -348,6 +360,7 @@ class Hybrid:
                 metadata=injection_metadata,
                 cost=cost,
                 serializer=serializer,
+                error_serializer=error_serializer,
             )
 
         replayed = self._try_replay(normalized_type, name, input)
@@ -362,6 +375,7 @@ class Hybrid:
             metadata=self._metadata(metadata, mode="live"),
             cost=cost,
             serializer=serializer,
+            error_serializer=error_serializer,
         )
 
     async def acall(
@@ -374,6 +388,7 @@ class Hybrid:
         metadata: dict[str, Any] | None = None,
         cost: float | None = None,
         serializer: Callable[[Result], Any] | None = None,
+        error_serializer: Callable[[BaseException], Any] | None = None,
     ) -> Result:
         """Replay, inject, or execute one asynchronous call and record the outcome."""
         normalized_type = self._event_type(event_type)
@@ -412,6 +427,7 @@ class Hybrid:
                 metadata=injection_metadata,
                 cost=cost,
                 serializer=serializer,
+                error_serializer=error_serializer,
             )
 
         replayed = self._try_replay(normalized_type, name, input)
@@ -426,6 +442,7 @@ class Hybrid:
             metadata=self._metadata(metadata, mode="live"),
             cost=cost,
             serializer=serializer,
+            error_serializer=error_serializer,
         )
 
     def save(self) -> None:

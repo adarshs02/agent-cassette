@@ -850,6 +850,48 @@ def test_detection_is_sorted_and_deduplicated(tmp_path: Path) -> None:
     }
 
 
+def test_static_detection_recognizes_mistral_and_gemini_from_pyproject(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "pyproject.toml",
+        '[project]\ndependencies = ["mistralai>=1,<2", "google-genai>=1,<2"]\n',
+    )
+
+    assert detect_integrations(tmp_path) == {
+        "providers": ["gemini", "mistral"],
+        "frameworks": [],
+        "test_frameworks": [],
+    }
+
+
+def test_static_detection_recognizes_mistral_and_gemini_case_and_extras(tmp_path: Path) -> None:
+    _write(tmp_path / "requirements.txt", "MistralAI\ngoogle-genai[vertex]>=1\n")
+
+    assert detect_integrations(tmp_path) == {
+        "providers": ["gemini", "mistral"],
+        "frameworks": [],
+        "test_frameworks": [],
+    }
+
+
+def test_config_accepts_mistral_and_gemini_providers(tmp_path: Path) -> None:
+    config_path = tmp_path / ".agent-cassette.toml"
+    _write(
+        config_path,
+        """schema_version = 1
+cassette_dir = "tests/cassettes"
+match = "exact"
+strict = true
+providers = ["gemini", "mistral"]
+frameworks = []
+""",
+    )
+
+    config, warnings = load_project_config(config_path)
+
+    assert config.providers == ("gemini", "mistral")
+    assert warnings == ()
+
+
 def test_test_framework_detection_uses_dependencies_and_static_imports(tmp_path: Path) -> None:
     _write(tmp_path / "requirements-dev.txt", "pytest>=8\n")
     _write(
@@ -1056,11 +1098,14 @@ def test_replay_cli_rejects_invalid_project_config(
     assert "Invalid project configuration" in capsys.readouterr().err
 
 
-def test_replay_cli_keeps_cassette_path_required() -> None:
-    with pytest.raises(SystemExit) as raised:
-        build_parser().parse_args(["replay"])
+def test_replay_cli_keeps_cassette_path_required(capsys: pytest.CaptureFixture[str]) -> None:
+    # The positional path is now optional at the argparse layer (``--name`` is the
+    # alternative), but replay with neither a path nor a name is still a usage error
+    # (exit 2) — the legacy "a cassette is required" guarantee is preserved.
+    from agent_cassette.cli import main
 
-    assert raised.value.code == 2
+    assert main(["replay"]) == 2
+    assert "requires a cassette path or --name" in capsys.readouterr().err
 
 
 def test_generated_smoke_test_records_and_replays_offline(

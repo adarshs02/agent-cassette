@@ -22,7 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10
 CONFIG_NAME = ".agent-cassette.toml"
 CONFIG_SCHEMA_VERSION = 1
 REPORT_SCHEMA_VERSION = 1
-SUPPORTED_PROVIDERS = ("anthropic", "mcp", "openai", "openai-agents")
+SUPPORTED_PROVIDERS = ("anthropic", "gemini", "mcp", "mistral", "openai", "openai-agents")
 SUPPORTED_FRAMEWORKS = ("langchain",)
 SUPPORTED_TEST_FRAMEWORKS = ("pytest", "unittest")
 _MATCH_MODES = ("exact", "fuzzy", "normalized", "subset")
@@ -372,6 +372,10 @@ def _detect_integrations_with_warnings(
             providers.add("mcp")
         elif normalized == "openai-agents":
             providers.add("openai-agents")
+        elif normalized == "mistralai":
+            providers.add("mistral")
+        elif normalized == "google-genai":
+            providers.add("gemini")
         if normalized == "langchain" or normalized.startswith("langchain-"):
             frameworks.add("langchain")
         if normalized == "pytest" or normalized.startswith("pytest-"):
@@ -1050,14 +1054,20 @@ def _read_optional_regular_at(parent_fd: int, name: str) -> tuple[bytes, tuple[i
         raise ProjectInitError(f"cannot safely inspect {name}: {error}") from error
     if not stat.S_ISREG(before.st_mode):
         raise ProjectInitError(f"{name} is not a regular file")
+    if before.st_nlink != 1:
+        raise ProjectInitError(f"{name} is a hard link")
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         descriptor = os.open(name, flags, dir_fd=parent_fd)
     except OSError as error:
         raise ProjectInitError(f"cannot safely open {name}: {error}") from error
     try:
-        file_stat = os.fstat(descriptor)
-        if not stat.S_ISREG(file_stat.st_mode) or _identity(before) != _identity(file_stat):
+        file_stat = os.fstat(descriptor)  # pre-read snapshot of the opened inode
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_nlink != 1
+            or _identity(before) != _identity(file_stat)
+        ):
             raise ProjectInitError(f"{name} changed while it was being opened")
         chunks: list[bytes] = []
         while True:
@@ -1065,7 +1075,12 @@ def _read_optional_regular_at(parent_fd: int, name: str) -> tuple[bytes, tuple[i
             if not chunk:
                 break
             chunks.append(chunk)
-        return b"".join(chunks), _identity(file_stat)
+        # Re-fstat the SAME descriptor after EOF: an inode that gained a hard link or was
+        # rewritten in place while we read it fails closed instead of being blessed.
+        final_stat = os.fstat(descriptor)
+        if _read_stability_key(final_stat) != _read_stability_key(file_stat):
+            raise ProjectInitError(f"{name} changed while it was being read")
+        return b"".join(chunks), _identity(final_stat)
     except OSError as error:
         raise ProjectInitError(f"cannot safely read {name}: {error}") from error
     finally:
@@ -1088,6 +1103,23 @@ def _relative_parts(relative: str) -> tuple[str, ...]:
 
 def _identity(file_stat: os.stat_result) -> tuple[int, int]:
     return file_stat.st_dev, file_stat.st_ino
+
+
+def _read_stability_key(
+    file_stat: os.stat_result,
+) -> tuple[bool, int, tuple[int, int], int, int, int]:
+    """Fields that must be unchanged between the pre-read and post-read fstat of the same
+    open descriptor: regular type, single link, identity, and read-relevant metadata. A
+    second hard link created mid-read bumps ``st_nlink`` and ``st_ctime_ns``; an in-place
+    rewrite changes ``st_size``/``st_mtime_ns`` — both are caught by comparing this key."""
+    return (
+        stat.S_ISREG(file_stat.st_mode),
+        file_stat.st_nlink,
+        _identity(file_stat),
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+        file_stat.st_ctime_ns,
+    )
 
 
 def _require_secure_filesystem_primitives() -> None:

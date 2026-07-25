@@ -18,6 +18,11 @@ class _Resp:
         return {"text": self.text}
 
 
+# Pin the fake under the real ``mistralai`` root so it serializes via the
+# trusted SDK path.
+_Resp.__module__ = "mistralai"
+
+
 class _EventCM:
     def __init__(self, events):
         self._events = events

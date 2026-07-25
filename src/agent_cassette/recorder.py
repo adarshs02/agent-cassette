@@ -14,6 +14,7 @@ from uuid import uuid4
 from agent_cassette.events import Event, EventType
 from agent_cassette.redaction import redact
 from agent_cassette.storage import append_event, save_events
+from agent_cassette.tools import _ToolSessionMixin
 
 Result = TypeVar("Result")
 
@@ -45,7 +46,7 @@ class _SpanContext:
         self.__exit__(exc_type, exc, traceback)
 
 
-class Recorder:
+class Recorder(_ToolSessionMixin):
     """Collect and persist events from one agent execution."""
 
     def __init__(self, path: str | Path, *, redact_secrets: bool = True) -> None:
@@ -128,6 +129,7 @@ class Recorder:
         metadata: dict[str, Any] | None = None,
         cost: float | None = None,
         serializer: Callable[[Result], Any] | None = None,
+        error_serializer: Callable[[BaseException], Any] | None = None,
     ) -> Result:
         """Execute a callable and record its result, duration, or error."""
         started = perf_counter()
@@ -138,7 +140,7 @@ class Recorder:
                 EventType.ERROR,
                 name,
                 input=input,
-                output={"type": type(error).__name__, "message": str(error)},
+                output=_error_output(error, error_serializer),
                 metadata=_error_metadata(metadata, event_type),
                 duration_ms=(perf_counter() - started) * 1000,
             )
@@ -164,6 +166,7 @@ class Recorder:
         metadata: dict[str, Any] | None = None,
         cost: float | None = None,
         serializer: Callable[[Result], Any] | None = None,
+        error_serializer: Callable[[BaseException], Any] | None = None,
     ) -> Result:
         """Await a callable and record its result, duration, or error."""
         started = perf_counter()
@@ -174,7 +177,7 @@ class Recorder:
                 EventType.ERROR,
                 name,
                 input=input,
-                output={"type": type(error).__name__, "message": str(error)},
+                output=_error_output(error, error_serializer),
                 metadata=_error_metadata(metadata, event_type),
                 duration_ms=(perf_counter() - started) * 1000,
             )
@@ -195,16 +198,26 @@ class Recorder:
             if not self.events or self.events[-1].type != EventType.ERROR:
                 return False
             output = self.events[-1].output
-            return (
-                isinstance(output, dict)
-                and output.get("type") == type(error).__name__
-                and output.get("message") == str(error)
-            )
+            if not isinstance(output, dict) or output.get("message") != str(error):
+                return False
+            # A custom error serializer may store the real class name in
+            # ``original_type`` (with a code-owned marker in ``type``); match either
+            # so an escaping error is not duplicated as ``uncaught_exception``.
+            name = type(error).__name__
+            return output.get("type") == name or output.get("original_type") == name
 
     def save(self) -> None:
         """Persist all currently recorded events."""
         with self._lock:
             save_events(self.path, self.events)
+
+
+def _error_output(
+    error: BaseException, error_serializer: Callable[[BaseException], Any] | None
+) -> Any:
+    if error_serializer is not None:
+        return error_serializer(error)
+    return {"type": type(error).__name__, "message": str(error)}
 
 
 def _error_metadata(metadata: dict[str, Any] | None, event_type: EventType | str) -> dict[str, Any]:

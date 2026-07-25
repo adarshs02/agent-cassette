@@ -53,13 +53,17 @@ EXPECTED_PUBLIC_API = {
     "recover_cassette",
     "register_migration",
     "render_viewer",
+    "tool_called",
+    "tool_not_called",
     "unregister_migration",
     "wrap_anthropic",
     "wrap_gemini",
     "wrap_langchain",
+    "wrap_langchain_tools",
     "wrap_mcp",
     "wrap_mistral",
     "wrap_openai",
+    "wrap_tool",
     "write_viewer",
 }
 

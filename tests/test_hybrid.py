@@ -114,7 +114,9 @@ def test_raise_mismatch_policy_is_useful_and_does_not_call_live(tmp_path):
         nonlocal called
         called = True
 
-    with pytest.raises(ReplayMismatchError, match="expected name 'step-1', received 'different'"):
+    with pytest.raises(
+        ReplayMismatchError, match=r"name mismatch \(expected 'step-1', received 'different'\)"
+    ):
         with Hybrid(source, output, mismatch="raise") as cassette:
             cassette.call(EventType.TOOL_CALL, "different", {}, live)
 
@@ -288,6 +290,11 @@ class _Response:
 
     def model_dump(self, mode=None):
         return {"id": self.id, "output_text": self.output_text}
+
+
+# Pin the fake under the real ``openai`` root so it serializes via the trusted
+# SDK path.
+_Response.__module__ = "openai"
 
 
 class _Responses:

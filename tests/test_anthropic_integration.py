@@ -28,6 +28,11 @@ class FakeMessage:
         return {"id": self.id, "text": self.text}
 
 
+# Pin the fake under the real ``anthropic`` root so it serializes via the
+# trusted SDK path.
+FakeMessage.__module__ = "anthropic"
+
+
 class FakeMessages:
     def __init__(self):
         self.calls = 0

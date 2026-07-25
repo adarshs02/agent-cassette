@@ -15,6 +15,8 @@ from agent_cassette.assertions import (
     max_total_cost,
     max_total_duration_ms,
     no_errors,
+    tool_called,
+    tool_not_called,
 )
 from agent_cassette.automatic import (
     automatic_openai_from_env,
@@ -40,6 +42,7 @@ from agent_cassette.redaction import RedactionError
 from agent_cassette.replay import RateLimitError, RecordedCallError, ReplayMismatchError
 from agent_cassette.reports import CIReport
 from agent_cassette.storage import CassetteCorruptionError, RecoveryReport, recover_cassette
+from agent_cassette.tools import wrap_tool
 from agent_cassette.viewer import render_viewer, write_viewer
 
 try:
@@ -53,6 +56,15 @@ def wrap_langchain(runnable, cassette, *, name="langchain.runnable"):
     from agent_cassette.integrations.langchain import wrap_langchain as _wrap_langchain
 
     return _wrap_langchain(runnable, cassette, name=name)
+
+
+def wrap_langchain_tools(tools, cassette, *, name_prefix="langchain.tool"):
+    """Lazily bridge LangChain ``BaseTool`` objects for record/replay (no core dependency)."""
+    from agent_cassette.integrations.langchain_tools import (
+        wrap_langchain_tools as _wrap_langchain_tools,
+    )
+
+    return _wrap_langchain_tools(tools, cassette, name_prefix=name_prefix)
 
 
 def langchain_callback_handler(cassette):
@@ -110,12 +122,16 @@ __all__ = [
     "register_migration",
     "recover_cassette",
     "render_viewer",
+    "tool_called",
+    "tool_not_called",
     "unregister_migration",
     "wrap_anthropic",
     "wrap_gemini",
     "wrap_langchain",
+    "wrap_langchain_tools",
     "wrap_mcp",
     "wrap_mistral",
     "wrap_openai",
+    "wrap_tool",
     "write_viewer",
 ]

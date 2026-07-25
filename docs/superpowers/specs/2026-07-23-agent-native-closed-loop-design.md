@@ -1,0 +1,193 @@
+# Agent-native closed operational loop (Phase E) — design
+
+Status: **implemented-approved** (2026-07-23; trust corrections accepted 2026-07-24/25 at
+`5c2ce85`). Base: accepted URI-redaction head `b1ba599` on `release/1.1.0`. This is the last feature
+phase for the unpublished `1.1.0`; it is not authorization to tag, push, PR, merge, or publish.
+Implementation accepted at final head `5c2ce85` on `release/1.1.0`.
+
+**Final trust guarantees (as accepted).** All Phase E project I/O goes through one directory-FD /
+`O_NOFOLLOW` layer: every read, create-only publish, and atomic replace of an owned file
+(cassette, report, manifest, workflow, config, temporary) traverses verified directory FDs, never a
+path-based `open`/`mkdir`/`rename` that could follow a symlink out of the project. Owned files must
+be **regular and single-link** (`st_nlink == 1`) — a symlink, hard link, or non-regular object fails
+closed — and reads are validated by a **post-read `fstat`** of the same descriptor (regular,
+single-link, identity, and `st_size`/`st_mtime_ns`/`st_ctime_ns` stable) so an inode that gains a
+link or is rewritten mid-read is rejected, not blessed. Child recordings stage in a private
+`mkdtemp(0o700)` **outside** the consumer tree and are copied in via FD; the golden is snapshotted
+once and never reopened; `record` is create-only and `rerecord` revalidates the original identity
+immediately before a directory-relative atomic replace, preserving the old bytes on any pre-publish
+failure. Staging is removed on every exit including `KeyboardInterrupt`/`SystemExit`. Structured
+replay mismatches are **secret-safe**: inputs are exact-detached before any normalization/matching,
+diagnostics carry only code-owned, payload-free data (kind, one-based index, value-free changed
+paths, `remaining`), and unavailable secure primitives fail closed with exit `2` and no
+symlink-following fallback.
+
+## Goal
+
+One safe, machine-operable loop an agent can drive without a TTY:
+
+```text
+setup preview -> explicit apply -> status ready -> named atomic record
+-> offline named replay -> structured pass/mismatch report
+-> fix and retry OR explicit atomic rerecord -> replay-only CI scaffold/check
+```
+
+Existing `init`, positional-path `record`/`replay`, `fork`, the pytest fixture, and the public
+Python API stay backward compatible; the new CLI behavior is additive. Package version `1.1.0`,
+cassette schema `1`, core dependencies, `EventType`, and `agent_cassette.__all__` are unchanged.
+
+## Threat model / safety invariants
+
+`setup`, `status`, `agent-manifest`, and `ci` never import or execute consumer code, read
+environment values, discover credentials, install dependencies, edit dependency manifests, run the
+smoke test, or spawn a subprocess. Named `record`/`rerecord` are **live** (they run the caller's
+child in-process, the only live surface); `replay` is offline and preserves the Phase A–D
+zero-live guarantee at supported wrapped/bridged boundaries. Reports and human error text never
+contain a child command, environment value, payload, exception message, credential, or `repr`.
+Optional integrations stay lazy; core is standard-library-only on Python 3.11+ (plus the existing
+3.10 support).
+
+## 1. Machine envelope (`machine.py`)
+
+Every Phase E JSON response and report file is the one canonical envelope (`indent=2`,
+`sort_keys=True`, trailing newline) with all keys always present: `schema_version` (1), `command`,
+`status`, `ok` (true only for exit 0), `exit_code` (equals the process result), `project`
+(absolute lexical path), deterministically ordered `warnings`/`changes`/`next_actions`, and `data`.
+Each next action is `{id, argv, mutates, network in {forbidden,allowed,required}, approval_required,
+requires_child_command}`; `argv` is an argument vector, and an action needing the caller's Python
+command ends `argv` at `"--"` with `requires_child_command=true`. Semantic exits: `0`
+success/current/dry-run; `1` check-needs-changes / replay mismatch / child nonzero; `2` invalid
+input/config/cassette/report path, conflict, or unsafe state. Argparse usage errors remain `2`; no
+command needs a TTY.
+
+## 2. Setup (`project_loop.py`)
+
+`agent-cassette setup [PROJECT] [--dry-run|--apply|--check] --json [--provider … --framework …
+--test-framework … --cassette-dir … --match … --strict/--no-strict --github-ci]`. Mode defaults to
+dry-run; mutation requires the literal `--apply`. Detection is always static. An explicit
+category override replaces detection for that category; existing valid config is authoritative
+(omitted overrides use it, a disagreeing explicit override is a `conflict`). Setup builds on
+`project_init`'s directory-FD/no-follow preflight and atomic create-only publish (never a weaker
+`Path.write_text`). It owns `.agent-cassette.toml`, `<cassette_dir>/.gitkeep`,
+`tests/test_agent_cassette_smoke.py`, `.agent-cassette/manifest.json`, and — with `--github-ci` —
+the replay workflow. The manifest is schema 1, records each generated relative path with its kind
+and SHA-256 of the exact generated bytes (no timestamps/identity/env/secrets/absolute paths). A
+file whose bytes differ from the generated content is never overwritten (`conflict`, exit 2); a
+missing owned file may be created; an `init`-produced scaffold is adopted only when its bytes match.
+`--github-ci` without pytest configured returns a blocker rather than inventing a test command.
+`--dry-run` writes nothing (`would-change`/`current`, exit 0); `--check` writes nothing (exit 1 for
+safe missing changes, 2 for conflict/invalid); `--apply` is byte-idempotent.
+
+## 3. Status and agent-manifest
+
+`status` reports, read-only, over the same secure reads: configured vs detected
+providers/frameworks/test-frameworks; config presence/validity and effective
+cassette-dir/match/strict; each managed file as `current|missing|modified|unmanaged`; cassette
+names (sorted), per-file validity, replayable-event count, and SHA-256 (no payloads); `setup_ready`
+/`record_ready`/`replay_ready`/`ci_ready`; capture coverage (automatic: OpenAI, Anthropic, OpenAI
+Agents — configured Mistral/Gemini/MCP/LangChain/tools listed as requiring their documented
+explicit wrapper, never falsely automatic); and stable coded blockers. A missing setup is a valid
+`changes-needed` (exit 1); invalid/unsafe state is exit 2; `status` creates nothing.
+`agent-manifest` returns static machine documentation (commands/options, exit meanings, next-action
+schema, owned-file rules, capture-coverage limits, safety guarantees), plus the current status
+summary when a config exists, and stays useful uninitialized.
+
+All Phase E project filesystem access (cassette, report, manifest, workflow, and
+project-owned temporaries) goes through one secure directory-FD / no-follow layer
+(`secure_fs.py`) composed from the `project_init` primitives — never a path-based
+`open`/`mkdir`/`read_bytes`/`unlink`/`tempfile.mkstemp`/`os.link`/`os.replace` or
+`load_events(path)`. Parents are traversed/created only with directory FDs, `O_DIRECTORY`,
+`O_NOFOLLOW`, and identity checks; files are required to be regular with `st_nlink == 1`;
+temporaries are `O_CREAT|O_EXCL|O_NOFOLLOW` mode `0o600` inside a verified directory FD;
+content is fsynced before publish and the directory after. A symlinked or swapped parent,
+a hard link, a FIFO/device, or a target that appears between preflight and commit fails
+closed with exit 2 and no out-of-project write. Status/manifest/cassette reads
+validate/count/hash the exact bytes read through the FD (`load_events_from_bytes`), never a
+re-opened path.
+
+## 4. Named runs (`named_runs.py`)
+
+`record`/`replay` gain `--name NAME [--project PROJECT] [--report-json PATH] -- PYTHON …`; exactly
+one of a positional cassette path or `--name` is required and legacy positional mode is unchanged.
+A name is an exact `str` matching `[A-Za-z0-9][A-Za-z0-9._-]{0,127}` (separators, `.`/`..`, control,
+and normalization tricks rejected). A named cassette resolves only to
+`<root>/<cassette_dir>/<NAME>.jsonl` and must stay lexically beneath the cassette directory; a named
+run without valid config is exit 2. The default report is
+`<root>/.agent-cassette/reports/<command>-<NAME>.json`; `--report-json` may override it only with a
+safe regular-file destination beneath the root (symlink/non-regular rejected). Reports are written
+atomically (same-directory temp, fsync, replace) after validation; child stdout/stderr are
+untouched and the CLI prints only the report path plus a short outcome — never JSON mixed into child
+stdout.
+
+Child recordings are staged in a private temp directory outside the consumer tree and copied into
+the verified project cassette directory through file descriptors; the golden read for
+replay/rerecord is snapshotted once through the FD layer (rejecting non-regular/multi-link) and
+never reopened by path. Named `record` is create-only: an existing golden is exit 2 without running
+the child, and the create-only publish (`os.link`) also fails closed if a golden appears during the
+run. `rerecord` snapshots the original identity and revalidates it immediately before the
+directory-relative atomic replace, preserving the old golden byte-for-byte on any failure. Named
+`record` publishes to `<NAME>.jsonl` only when the child exits 0, the
+context closes cleanly, a strict load succeeds, and at least one replayable boundary exists;
+otherwise it removes only the temp, preserves any golden, and writes `child-failed` (exit 1) or
+`invalid` (exit 2). A child exception keeps its traceback after the secret-safe report is durably
+written; the report names only the exception type. `rerecord --name …` requires an existing valid
+named cassette, records/validates a temporary candidate, and atomically replaces only on full
+success, reporting old/new SHA-256 and counts (never events); on any failure the golden is
+byte-identical. There is no `--force`, implicit overwrite, delete, matching relaxation, or CI
+rerecord path. Record/rerecord set `network=required` only on the action that performs live capture
+and never read or report whether credentials exist.
+
+## 5. Structured replay success and mismatch (`replay.py`)
+
+All report indexes are **one-based**: strict divergence is the matched cassette index + 1,
+exhausted is `len(events) + 1`, strict-exit unconsumed is the first unconsumed cassette index + 1
+with that event's safe expected boundary, and non-strict no-match is `event_index=null`. Before the
+changed-path walk, both normalized inputs are detached through the exact bounded JSON copier
+(`copy_json_value`), so a hostile key/container never reaches `str`/`repr`/iteration; a non-strict
+actual value yields a value-free root difference instead of a serialization exception. `_safe_name`
+runs exact strings through the shared redaction (Bearer/URI-userinfo/secret-query) before control
+stripping/bounding, and mismatch next actions carry the real safe cassette path (no placeholder).
+`ReplayMismatchError` gains optional code-owned structured fields (`kind`/`event_index`/`expected`/
+`actual`/`changed_paths`/`changed_paths_truncated`/`match`/`remaining`); legacy message-only
+construction still works. Every mismatch path is populated (strict type/name/input, non-strict
+no-match, exhausted, strict-exit unconsumed). Mismatch report `data` is `{cassette:{name,path,
+sha256}, failure:{kind,event_index,expected,actual,changed_paths,changed_paths_truncated,match,
+remaining}}`; boundary summaries carry only bounded/sanitized type and name, changed paths are
+computed from already-redacted/normalized values, contain no values, cap at 50, sanitize segments,
+and mark truncation. The public mismatch message identifies step/kind and safe type/name only — it
+no longer renders input repr. Success reports include cassette hash, replayable/consumed/remaining
+counts, and the child exit code. On mismatch (exit 1) the deterministic next actions are, in order:
+inspect status, retry after fixing code, inspect cassette, then explicit `rerecord`
+(`approval_required=true`, `requires_child_command=true`, live-network) — never fuzzy/subset/ignore/
+delete/silent rerecord.
+
+## 6. Replay-only CI scaffold
+
+`agent-cassette ci [PROJECT] --github [--dry-run|--apply|--check] --json` generates exactly
+`.github/workflows/agent-cassette-replay.yml` with a version marker and manifest ownership. It uses
+`pull_request` + `workflow_dispatch`, `permissions: contents: read`, a static dependency strategy
+(`uv sync --frozen --all-extras --dev` when `uv.lock` exists, else install the project plus pytest
+and agent-cassette), runs pytest only as `--cassette-mode=replay`, sets common provider credential
+variables empty and never references GitHub secrets, runs `agent-cassette setup . --check --json`
+before tests, and never records/rerecords/forks live or grants write permission. No pytest
+configured → blocker. Workflow apply/check uses the same hash-ownership/no-follow/conflict/
+idempotence rules; `setup --github-ci` includes this exact plan; modified/unmanaged workflows are
+never overwritten. Docs state that dependency install may use network while the test phase has no
+provider credentials and supported replay boundaries are zero-live — not that arbitrary sockets are
+blocked.
+
+## 7. Tests
+
+`tests/test_phase_e.py` plus updated contract/init snapshots cover the envelope/action schema and
+canonical serialization; setup fresh dry-run/apply/check, overrides, detection fallback,
+idempotence, conflicting override, modified/missing managed file, and no writes in dry/check;
+status before/after setup, modified/corrupt states, sorted cassette inventory, and accurate
+automatic-vs-explicit coverage; the agent-manifest contract; named record create-only/atomic-publish
+and failure-class golden/temp preservation; rerecord old-bytes preservation on failure and hash
+change on success; offline replay zero-live counts and every structured mismatch kind; report
+default/override destination, atomicity, standalone-JSON-despite-noisy-child, and secret-free
+reports; CI dry/apply/check/idempotence/conflict, exact permissions/triggers, credential-empty env,
+replay-only command, no-pytest blocker, and `setup --github-ci` parity; CLI exit `0/1/2`, no TTY,
+legacy positional record/replay unchanged, and the frozen public API/signature/schema snapshots.
+A consolidated consumer-acceptance test drives the full loop with an automatic-provider fake and a
+noisy child, and an installed-wheel smoke runs it outside the checkout with credentials unset.

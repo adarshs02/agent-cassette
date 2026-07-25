@@ -9,6 +9,8 @@ from time import perf_counter
 from typing import Any, TypeVar, cast
 
 from agent_cassette.events import EventType
+from agent_cassette.integrations._serialization import serialize_sdk_value
+from agent_cassette.json_codec import validate_json_value
 from agent_cassette.replay import RateLimitError
 
 Client = TypeVar("Client")
@@ -29,6 +31,7 @@ class ProviderSpec:
     provider: str
     operations: frozenset[str]
     prefixes: frozenset[str]
+    trusted_roots: tuple[str, ...] = ()
     raw_response_attrs: frozenset[str] = frozenset({"with_raw_response", "with_streaming_response"})
     unsupported_operations: dict[str, str] = field(default_factory=dict)
     stream_operations: frozenset[str] = frozenset()
@@ -129,7 +132,9 @@ class _RecordingStream(Iterator[Any]):
             EventType.MODEL_CALL,
             self._spec.event_name(self._operation),
             input=self._request,
-            output=_serialize_stream(self._chunks, self._spec.response_attributes),
+            output=_serialize_stream(
+                self._chunks, self._spec.response_attributes, self._spec.trusted_roots
+            ),
             metadata=_metadata(self._spec, self._operation, streaming=True),
             duration_ms=(perf_counter() - self._started) * 1000,
         )
@@ -142,7 +147,9 @@ class _RecordingStream(Iterator[Any]):
             EventType.ERROR,
             self._spec.event_name(self._operation),
             input=self._request,
-            output=_serialize_stream_error(self._chunks, error, self._spec.response_attributes),
+            output=_serialize_stream_error(
+                self._chunks, error, self._spec.response_attributes, self._spec.trusted_roots
+            ),
             metadata=_stream_error_metadata(self._spec, self._operation),
             duration_ms=(perf_counter() - self._started) * 1000,
         )
@@ -254,7 +261,9 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
             EventType.MODEL_CALL,
             self._spec.event_name(self._operation),
             input=self._request,
-            output=_serialize_stream(self._chunks, self._spec.response_attributes),
+            output=_serialize_stream(
+                self._chunks, self._spec.response_attributes, self._spec.trusted_roots
+            ),
             metadata=_metadata(self._spec, self._operation, streaming=True),
             duration_ms=(perf_counter() - self._started) * 1000,
         )
@@ -267,7 +276,9 @@ class _AsyncRecordingStream(AsyncIterator[Any]):
             EventType.ERROR,
             self._spec.event_name(self._operation),
             input=self._request,
-            output=_serialize_stream_error(self._chunks, error, self._spec.response_attributes),
+            output=_serialize_stream_error(
+                self._chunks, error, self._spec.response_attributes, self._spec.trusted_roots
+            ),
             metadata=_stream_error_metadata(self._spec, self._operation),
             duration_ms=(perf_counter() - self._started) * 1000,
         )
@@ -369,7 +380,7 @@ class _ResourceProxy:
         if is_async:
 
             async def async_create(*args: Any, **kwargs: Any) -> Any:
-                request = _serialize_request(args, kwargs)
+                request = _serialize_request(args, kwargs, spec.trusted_roots)
                 if stream_operation or kwargs.get("stream"):
                     started = perf_counter()
                     replayed, recorded = _prepare_stream(
@@ -411,7 +422,7 @@ class _ResourceProxy:
                     live_call,
                     metadata=_metadata(spec, operation),
                     serializer=lambda response: _serialize_response(
-                        response, spec.response_attributes
+                        response, spec.response_attributes, spec.trusted_roots
                     ),
                 )
                 return _restore_response(recorded)
@@ -419,7 +430,7 @@ class _ResourceProxy:
             return async_create
 
         def sync_create(*args: Any, **kwargs: Any) -> Any:
-            request = _serialize_request(args, kwargs)
+            request = _serialize_request(args, kwargs, spec.trusted_roots)
             if stream_operation or kwargs.get("stream"):
                 started = perf_counter()
                 replayed, recorded = _prepare_stream(
@@ -466,7 +477,9 @@ class _ResourceProxy:
                 request,
                 live_call,
                 metadata=_metadata(spec, operation),
-                serializer=lambda response: _serialize_response(response, spec.response_attributes),
+                serializer=lambda response: _serialize_response(
+                    response, spec.response_attributes, spec.trusted_roots
+                ),
             )
             return _restore_response(recorded)
 
@@ -585,27 +598,36 @@ def _record_stream_start_error(
         EventType.ERROR,
         spec.event_name(operation),
         input=request,
-        output=_serialize_stream_error([], error, spec.response_attributes),
+        output=_serialize_stream_error([], error, spec.response_attributes, spec.trusted_roots),
         metadata=_stream_error_metadata(spec, operation),
         duration_ms=(perf_counter() - started) * 1000,
     )
 
 
 def _serialize_stream(
-    chunks: list[Any], response_attributes: frozenset[str] = frozenset()
+    chunks: list[Any],
+    response_attributes: frozenset[str] = frozenset(),
+    trusted_roots: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "__agent_cassette_stream__": True,
-        "chunks": [_serialize_response(chunk, response_attributes) for chunk in chunks],
+        "chunks": [
+            _serialize_response(chunk, response_attributes, trusted_roots) for chunk in chunks
+        ],
     }
 
 
 def _serialize_stream_error(
-    chunks: list[Any], error: Exception, response_attributes: frozenset[str] = frozenset()
+    chunks: list[Any],
+    error: Exception,
+    response_attributes: frozenset[str] = frozenset(),
+    trusted_roots: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "__agent_cassette_stream__": True,
-        "chunks": [_serialize_response(chunk, response_attributes) for chunk in chunks],
+        "chunks": [
+            _serialize_response(chunk, response_attributes, trusted_roots) for chunk in chunks
+        ],
         "error": {"type": type(error).__name__, "message": str(error)},
     }
 
@@ -634,50 +656,48 @@ def _restore_stream_error(payload: dict[str, Any]) -> Exception:
     return allowed.get(error_type, RuntimeError)(message)
 
 
-def _serialize_request(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "args": [_to_data(argument) for argument in args],
-        "kwargs": {key: _to_data(value) for key, value in kwargs.items()},
-    }
+def _serialize_request(
+    args: tuple[Any, ...], kwargs: dict[str, Any], trusted_roots: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    # Serialize (and validate) the COMPLETE request envelope once so the envelope's
+    # own depth is counted and a too-deep/invalid combined request raises
+    # StrictJSONError before the live call rather than later as RedactionError.
+    return cast(
+        dict[str, Any],
+        serialize_sdk_value({"args": list(args), "kwargs": kwargs}, trusted_roots=trusted_roots),
+    )
 
 
 def _serialize_response(
-    response: Any, response_attributes: frozenset[str] = frozenset()
+    response: Any,
+    response_attributes: frozenset[str] = frozenset(),
+    trusted_roots: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     response_type = type(response)
-    data = _to_data(response)
+    data = serialize_sdk_value(response, trusted_roots=trusted_roots)
     if response_attributes and isinstance(data, dict):
         for attribute in response_attributes:
             if attribute not in data:
-                data[attribute] = _to_data(getattr(response, attribute, None))
-    return {
+                data[attribute] = serialize_sdk_value(
+                    getattr(response, attribute, None), trusted_roots=trusted_roots
+                )
+    envelope = {
         "__agent_cassette_response__": True,
         "module": response_type.__module__,
         "class": response_type.__qualname__,
         "data": data,
     }
+    # Validate the COMPLETE response envelope (wrapper depth + data + captured
+    # attributes) so an over-deep/invalid combined output raises StrictJSONError
+    # before persistence rather than later as RedactionError.
+    validate_json_value(envelope)
+    return envelope
 
 
 def _restore_response(recorded: Any) -> Any:
     if not isinstance(recorded, dict) or not recorded.get("__agent_cassette_response__"):
         return recorded
     return _to_replay_object(recorded.get("data"))
-
-
-def _to_data(value: Any) -> Any:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return model_dump(mode="json")
-        except TypeError:
-            return model_dump()
-    if isinstance(value, dict):
-        return {str(key): _to_data(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_to_data(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
 
 
 def _to_replay_object(value: Any) -> Any:

@@ -37,9 +37,14 @@ def test_replay_reports_first_mismatch(tmp_path):
     with Cassette.record(path) as cassette:
         cassette.call(EventType.TOOL_CALL, "search", {"query": "agents"}, lambda: ["result"])
 
-    with pytest.raises(ReplayMismatchError, match="input changed"):
+    # The mismatch message is payload-safe: it names the step and kind, never the input.
+    with pytest.raises(ReplayMismatchError) as raised:
         with Cassette.replay(path) as cassette:
             cassette.call(EventType.TOOL_CALL, "search", {"query": "different"})
+    assert str(raised.value) == "Replay diverged at step 1: input mismatch"
+    assert raised.value.kind == "input"
+    assert "different" not in str(raised.value) and "agents" not in str(raised.value)
+    assert raised.value.changed_paths == ("query",)
 
 
 def test_replay_requires_all_events_in_strict_mode(tmp_path):
