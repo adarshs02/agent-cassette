@@ -765,6 +765,162 @@ def test_rerecord_validation_failure_preserves_golden_and_cleans_staging(
     assert created and all(not path.exists() for path in created)  # staging cleaned
 
 
+# --------------------------------------------------------------------------- #
+# atomic_replace temp cleanup on failure/interruption (final trust correction):
+# a BaseException before rename succeeds removes ONLY our exact temp, re-raised
+# unchanged, destination preserved, sibling untouched, descriptors closed.
+# --------------------------------------------------------------------------- #
+
+
+def _atomic_replace_tmps(directory: Path) -> list[str]:
+    return sorted(p.name for p in directory.iterdir() if p.name.startswith(".agent-cassette-"))
+
+
+class _FdTracker:
+    """Record fds returned by ``os.open`` and passed to ``os.close`` in a module's os."""
+
+    def __init__(self, module) -> None:
+        self.module = module
+        self.opened: list[int] = []
+        self.closed: list[int] = []
+        self._real_open: Callable[..., Any] | None = None
+        self._real_close: Callable[..., Any] | None = None
+
+    def __enter__(self):
+        real_open: Callable[..., Any] = self.module.os.open
+        real_close: Callable[..., Any] = self.module.os.close
+        self._real_open, self._real_close = real_open, real_close
+
+        def tracking_open(*args, **kwargs):
+            fd = real_open(*args, **kwargs)
+            self.opened.append(fd)
+            return fd
+
+        def tracking_close(fd):
+            self.closed.append(fd)
+            return real_close(fd)
+
+        self.module.os.open = tracking_open
+        self.module.os.close = tracking_close
+        return self
+
+    def __exit__(self, *exc):
+        self.module.os.open = self._real_open
+        self.module.os.close = self._real_close
+        return False
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("stage", ["write", "fsync", "rename"])
+def test_atomic_replace_cleans_temp_on_base_exception(tmp_path, monkeypatch, stage, interrupt):
+    from agent_cassette import secure_fs
+
+    proj = (tmp_path / "proj").resolve()
+    proj.mkdir()
+    (proj / "x.json").write_bytes(b"old")  # pre-existing destination
+    user_tmp = proj / ".agent-cassette-userowned.tmp"  # lookalike we must NOT touch
+    user_tmp.write_bytes(b"keep")
+    sentinel = interrupt()
+
+    def throw(*_args, **_kwargs):
+        raise sentinel
+
+    if stage == "write":
+        monkeypatch.setattr(secure_fs, "_write_all", throw)
+    elif stage == "fsync":
+        monkeypatch.setattr(secure_fs.os, "fsync", throw)
+    else:
+        monkeypatch.setattr(secure_fs.os, "rename", throw)
+
+    root = secure_fs.open_root(proj)
+    try:
+        with _FdTracker(secure_fs) as fds:
+            with pytest.raises(interrupt) as caught:
+                secure_fs.atomic_replace(root, "x.json", b"new")
+        assert caught.value is sentinel  # re-raised unchanged, identity preserved
+        assert fds.opened and set(fds.opened) <= set(fds.closed)  # created descriptor closed
+        assert _os.fstat(root).st_ino  # caller-owned root fd still valid until we close it
+    finally:
+        _os.close(root)
+    # only the user-owned lookalike remains: our exact temp was removed, the sibling was not
+    assert _atomic_replace_tmps(proj) == [".agent-cassette-userowned.tmp"]
+    assert (proj / "x.json").read_bytes() == b"old"  # destination byte-identical
+    assert user_tmp.read_bytes() == b"keep"  # unrelated user-owned temp untouched
+
+
+def test_atomic_replace_base_exception_on_absent_target_leaves_none(tmp_path, monkeypatch):
+    from agent_cassette import secure_fs
+
+    proj = (tmp_path / "proj").resolve()
+    proj.mkdir()  # target does NOT exist
+    sentinel = KeyboardInterrupt()
+    monkeypatch.setattr(secure_fs, "_write_all", lambda *a, **k: (_ for _ in ()).throw(sentinel))
+    root = secure_fs.open_root(proj)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            secure_fs.atomic_replace(root, "new.json", b"data")
+    finally:
+        _os.close(root)
+    assert _atomic_replace_tmps(proj) == []
+    assert not (proj / "new.json").exists()  # originally absent target stays absent
+
+
+@pytest.mark.parametrize(
+    "stage,message",
+    [("write", "write failed for x.json"), ("rename", "atomic publish failed for x.json")],
+)
+def test_atomic_replace_oserror_message_stable_and_temp_cleaned(
+    tmp_path, monkeypatch, stage, message
+):
+    from agent_cassette import secure_fs
+
+    proj = (tmp_path / "proj").resolve()
+    proj.mkdir()
+    (proj / "x.json").write_bytes(b"old")
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk boom")
+
+    if stage == "write":
+        monkeypatch.setattr(secure_fs, "_write_all", boom)
+    else:
+        monkeypatch.setattr(secure_fs.os, "rename", boom)
+
+    root = secure_fs.open_root(proj)
+    try:
+        with pytest.raises(secure_fs.SecureFilesystemError, match=message):
+            secure_fs.atomic_replace(root, "x.json", b"new")
+    finally:
+        _os.close(root)
+    assert _atomic_replace_tmps(proj) == []  # temp still cleaned on ordinary OSError
+    assert (proj / "x.json").read_bytes() == b"old"
+
+
+def test_rerecord_interruption_preserves_golden_and_leaves_no_temp(
+    tmp_path, fake_openai, monkeypatch
+):
+    from agent_cassette import secure_fs
+
+    root = _project(tmp_path)
+    run_named_record(root, "smoke", [str(_agent_script(tmp_path, secret="one"))], None)
+    golden = root / "tests/cassettes/smoke.jsonl"
+    original = golden.read_bytes()
+
+    created = _staging_tracker(monkeypatch)
+    sentinel = KeyboardInterrupt()
+    # Interrupt the golden's atomic_replace write (the first secure_fs write in rerecord).
+    monkeypatch.setattr(secure_fs, "_write_all", lambda *a, **k: (_ for _ in ()).throw(sentinel))
+    changed = _agent_script(tmp_path, secret="two")
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        run_named_rerecord(root, "smoke", [str(changed)], None)
+
+    assert caught.value is sentinel
+    assert golden.read_bytes() == original  # old golden byte-identical
+    assert not list((root / "tests/cassettes").glob(".agent-cassette-*.tmp"))  # no temp left
+    assert created and all(not path.exists() for path in created)  # private staging removed
+
+
 def test_named_replay_structured_mismatch(tmp_path, fake_openai):
     root = _project(tmp_path)
     run_named_record(root, "smoke", [str(_agent_script(tmp_path, secret="hello"))], None)

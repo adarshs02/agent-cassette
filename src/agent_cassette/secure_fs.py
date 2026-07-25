@@ -229,19 +229,25 @@ def atomic_replace(
             descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
         except OSError as error:
             raise SecureFilesystemError(f"cannot create report temporary: {error}") from error
+        # Once our exact random temporary exists, ANY failure or interruption before the
+        # rename succeeds must remove that exact name (never the destination or a sibling)
+        # and re-raise unchanged. Ordinary OSError write/rename failures keep their existing
+        # translated SecureFilesystemError; KeyboardInterrupt/SystemExit propagate by identity.
         try:
-            _write_all(descriptor, content)
-            os.fsync(descriptor)
-        except OSError as error:
+            try:
+                _write_all(descriptor, content)
+                os.fsync(descriptor)
+            except OSError as error:
+                raise SecureFilesystemError(f"write failed for {name}: {error}") from error
+            finally:
+                os.close(descriptor)
+            try:
+                os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            except OSError as error:
+                raise SecureFilesystemError(f"atomic publish failed for {name}: {error}") from error
+        except BaseException:
             _unlink_quietly(parent_fd, temporary)
-            raise SecureFilesystemError(f"write failed for {name}: {error}") from error
-        finally:
-            os.close(descriptor)
-        try:
-            os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-        except OSError as error:
-            _unlink_quietly(parent_fd, temporary)
-            raise SecureFilesystemError(f"atomic publish failed for {name}: {error}") from error
+            raise
         _fsync_dir(parent_fd)
     finally:
         os.close(parent_fd)
