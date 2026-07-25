@@ -10,7 +10,9 @@ import os as _os
 import sys
 import tempfile
 import types
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -424,45 +426,51 @@ class _MidReadRace:
         self.mutate = mutate
         self.track_open = track_open  # patching os.open globally breaks run_status dir opens
         self.extra = target.with_name(target.name + ".race")
-        self._real_read = None
-        self._real_open = None
-        self._real_close = None
-        self._ino = None
+        # os.open is overloaded, so the saved originals use a broad callable alias; the
+        # closures below bind non-optional locals so no call sees an Optional.
+        self._real_read: Callable[..., Any] | None = None
+        self._real_open: Callable[..., Any] | None = None
+        self._real_close: Callable[..., Any] | None = None
+        self._ino: tuple[int, int] | None = None
         self.fired = False
         self.opened: list[int] = []
         self.closed: list[int] = []
 
     def __enter__(self):
         st = _os.stat(self.target)
-        self._ino = (st.st_dev, st.st_ino)
-        self._real_read = self.module.os.read
-        self._real_open = self.module.os.open
-        self._real_close = self.module.os.close
+        ino: tuple[int, int] = (st.st_dev, st.st_ino)
+        real_read: Callable[..., Any] = self.module.os.read
+        real_open: Callable[..., Any] = self.module.os.open
+        real_close: Callable[..., Any] = self.module.os.close
+        self._ino = ino
+        self._real_read = real_read
+        self._real_open = real_open
+        self._real_close = real_close
 
         def tracking_open(*args, **kwargs):
-            fd = self._real_open(*args, **kwargs)
+            fd = real_open(*args, **kwargs)
             self.opened.append(fd)
             return fd
 
         def tracking_close(fd):
             self.closed.append(fd)
-            return self._real_close(fd)
+            return real_close(fd)
 
         def racing(fd, size):
-            data = self._real_read(fd, size)
+            data = real_read(fd, size)
             if not self.fired and data:
                 try:
                     fst = _os.fstat(fd)
                 except OSError:  # pragma: no cover
                     return data
-                if (fst.st_dev, fst.st_ino) == self._ino:
+                if (fst.st_dev, fst.st_ino) == ino:
                     self.fired = True
                     if self.mutate == "link":
                         _os.link(self.target, self.extra)
                     else:
-                        fd2 = self._real_open(str(self.target), _os.O_WRONLY | _os.O_APPEND)
+                        fd2 = real_open(str(self.target), _os.O_WRONLY | _os.O_APPEND)
                         _os.write(fd2, b"XXXX")  # bumps st_size + st_mtime_ns
-                        self._real_close(fd2)
+                        real_close(fd2)
             return data
 
         self.module.os.read = racing
