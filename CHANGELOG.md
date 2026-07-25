@@ -4,48 +4,14 @@ All notable changes to Agent Cassette are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) from 1.0 onward.
 
-## [Unreleased]
-
 ## [1.1.0] - Unreleased
 
-### Added
-- Agent-native closed-loop CLI (Phase E): `agent-cassette setup`, `status`, `agent-manifest`,
-  and `ci` plus named `record`/`replay`/`rerecord` give an agent one safe, non-interactive loop —
-  preview/apply project scaffolding, know project/cassette state, record and replay cassettes by
-  config-owned name, read a structured pass/mismatch report, then fix-and-retry or explicitly
-  re-record. Every machine response and report file uses one canonical JSON envelope
-  (`schema_version`/`command`/`status`/`ok`/`exit_code`/`project`/`warnings`/`changes`/
-  `next_actions`/`data`) with argv-vector next actions and semantic exit codes (`0`/`1`/`2`).
-  `setup` builds on the existing no-follow atomic-apply engine, records generated-file SHA-256 in
-  `.agent-cassette/manifest.json`, never overwrites a file whose bytes differ (conflict), and never
-  runs consumer code, reads env values, or installs dependencies. Named `record` is create-only and
-  publishes a temporary cassette to the golden path only after full validation; `rerecord` is the
-  sole explicit golden-update path; `replay` stays offline (zero live calls at supported boundaries)
-  and writes a structured, secret-safe mismatch report. `ReplayMismatchError` gained backward-
-  compatible structured fields and payload-safe messages. `ci --github` scaffolds a replay-only
-  GitHub workflow (credential-empty env, no secrets, `permissions: contents: read`). Existing
-  `init`, positional `record`/`replay`, `fork`, the pytest fixture, and the public Python API are
-  unchanged; no new public Python export, `EventType`, schema, dependency, or version change.
-
-### Security
-- Connection-URI credential redaction: the recursive `redact()` path (recorder, hybrid,
-  replay input normalization, assertions, and viewer) now scrubs passwords embedded in
-  hierarchical connection URIs — the userinfo password in `scheme://user:password@host`
-  (using the last `@` so an unescaped `@` inside a password is still removed) and
-  secret-named URL query values (`?password=`/`?token=`/`?api_key=`/…) — for any valid
-  scheme (`postgres`, `postgresql`, `mysql`, `mariadb`, `redis`, `rediss`, `mongodb`,
-  `mongodb+srv`, `amqp`, `amqps`, and custom schemes). Scheme, username, host/port
-  (including IPv6), path, non-secret query parameters, fragment, and surrounding prose are
-  preserved byte-for-byte; percent-encoded secrets are removed; the scrub is idempotent.
-  Ordinary URLs, emails, username-only userinfo, and `@`/`:` in paths/prose are left
-  unchanged. A value such as `postgres://user:p@ssw0rd@db.internal/app` previously reached
-  cassette/viewer output with the password intact. No public API, `EventType`, schema, or
-  dependency change; `redact_secrets=False` remains the exact opt-out.
-
-Tool record/replay: deterministically replay an agent's Python tool calls — scalar and
-streaming — without executing the real tools. Held unpublished until all tool-replay
-phases (A core replay, B streaming, C1/C2 framework bridges, D verification UX) pass
-acceptance, then shipped as one release.
+Complete tool-replay release. Deterministically replay an agent's Python tool calls — scalar and
+streaming — without executing the real tools, across `wrap_tool`, MCP, OpenAI Agents, and LangChain,
+plus an agent-native non-interactive closed operational loop. Held unpublished until every
+tool-replay phase (A core replay, B streaming, C1/C2 framework bridges, D verification UX) and the
+Phase E closed loop passed acceptance, then shipped as one release. No new public Python export,
+`EventType`, cassette schema (still v1), or runtime dependency; version is `1.1.0`.
 
 ### Added
 - Tool record/replay (Phase A): `wrap_tool(function, cassette, *, name=None)` and the
@@ -106,6 +72,50 @@ acceptance, then shipped as one release.
   `--tool-called NAME` / `--tool-not-called NAME`. Combined with a full-consumption
   (`remaining == 0`) replay, these are the public, deterministic way to verify in CI that an agent
   run replayed its expected tool trajectory with zero live tool execution.
+- Agent-native closed-loop CLI (Phase E): `agent-cassette setup`, `status`, `agent-manifest`,
+  and `ci` plus named `record`/`replay`/`rerecord` give an agent one safe, non-interactive loop —
+  preview/apply project scaffolding, know project/cassette state, record and replay cassettes by
+  config-owned name, read a structured pass/mismatch report, then fix-and-retry or explicitly
+  re-record. Every machine response and report file uses one canonical JSON envelope
+  (`schema_version`/`command`/`status`/`ok`/`exit_code`/`project`/`warnings`/`changes`/
+  `next_actions`/`data`) with argv-vector next actions and semantic exit codes (`0`/`1`/`2`).
+  `setup` builds on the existing no-follow atomic-apply engine, records generated-file SHA-256 in
+  `.agent-cassette/manifest.json`, never overwrites a file whose bytes differ (conflict), and never
+  runs consumer code, reads env values, or installs dependencies. Named `record` is create-only and
+  publishes a temporary cassette to the golden path only after full validation; `rerecord` is the
+  sole explicit golden-update path; `replay` stays offline (zero live calls at supported boundaries)
+  and writes a structured, secret-safe mismatch report. `ReplayMismatchError` gained backward-
+  compatible structured fields and payload-safe messages. `ci --github` scaffolds a replay-only
+  GitHub workflow (credential-empty env, no secrets, `permissions: contents: read`). Existing
+  `init`, positional `record`/`replay`, `fork`, the pytest fixture, and the public Python API are
+  unchanged; no new public Python export, `EventType`, schema, dependency, or version change.
+
+### Security
+- Connection-URI credential redaction: the recursive `redact()` path (recorder, hybrid,
+  replay input normalization, assertions, and viewer) now scrubs passwords embedded in
+  hierarchical connection URIs — the userinfo password in `scheme://user:password@host`
+  (using the last `@` so an unescaped `@` inside a password is still removed) and
+  secret-named URL query values (`?password=`/`?token=`/`?api_key=`/…) — for any valid
+  scheme (`postgres`, `postgresql`, `mysql`, `mariadb`, `redis`, `rediss`, `mongodb`,
+  `mongodb+srv`, `amqp`, `amqps`, and custom schemes). Scheme, username, host/port
+  (including IPv6), path, non-secret query parameters, fragment, and surrounding prose are
+  preserved byte-for-byte; percent-encoded secrets are removed; the scrub is idempotent.
+  Ordinary URLs, emails, username-only userinfo, and `@`/`:` in paths/prose are left
+  unchanged. A value such as `postgres://user:p@ssw0rd@db.internal/app` previously reached
+  cassette/viewer output with the password intact. No public API, `EventType`, schema, or
+  dependency change; `redact_secrets=False` remains the exact opt-out.
+- Phase E filesystem and report trust: the closed loop's project I/O goes through one
+  directory-FD / `O_NOFOLLOW` layer. Owned files (cassette, report, manifest, workflow, config,
+  temporary) must be regular and single-link (`st_nlink == 1`); a symlink, hard link, or
+  non-regular object fails closed with exit `2` and no symlink-following fallback. Reads are
+  revalidated by a post-read `fstat` of the same descriptor (type, single-link, identity, and
+  `st_size`/`st_mtime_ns`/`st_ctime_ns` stable), so an inode that gains a link or is rewritten
+  mid-read is rejected. Child recordings stage in a private `mkdtemp(0o700)` outside the consumer
+  tree and are copied in via FD; `record` is create-only, `rerecord` revalidates identity before a
+  directory-relative atomic replace and preserves the old bytes on any pre-publish failure, and
+  staging is removed on every exit including `KeyboardInterrupt`/`SystemExit`. Machine envelopes,
+  blockers, and mismatch reports carry only code-owned, payload-free data (no recorded value,
+  child string, environment value, credential, or `repr`).
 
 ## [1.0.1] - 2026-07-21
 

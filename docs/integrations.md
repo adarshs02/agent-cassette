@@ -75,9 +75,10 @@ current guardrail again on replay.
 
 ## Mistral
 
-Install `agent-cassette[mistral]` and the Mistral client is patched for each `record`/`replay`
-run. Python callers can also wrap explicitly with `wrap_mistral` or patch the constructor with
-`patch_mistral`.
+Install `agent-cassette[mistral]`, then wrap the Mistral client explicitly with `wrap_mistral`
+(or patch the constructor with `patch_mistral`) in your own record/replay code. Unlike OpenAI,
+Anthropic, and OpenAI Agents, Mistral is **not** auto-patched by the CLI `record`/`replay`
+runner, so an unwrapped client would run live and record nothing.
 
 Supported operations: sync `chat.complete`, async `chat.complete_async`, and streaming
 `chat.stream` / `chat.stream_async`. On replay, these calls return inert, attribute-compatible
@@ -85,9 +86,10 @@ responses from the cassette: no client, no key, no network, no dynamic imports.
 
 ## Gemini
 
-Install `agent-cassette[gemini]` and the Gemini client is patched for each `record`/`replay`
-run. Python callers can also wrap explicitly with `wrap_gemini` or patch the constructor with
-`patch_gemini`.
+Install `agent-cassette[gemini]`, then wrap the Gemini client explicitly with `wrap_gemini`
+(or patch the constructor with `patch_gemini`) in your own record/replay code. Unlike OpenAI,
+Anthropic, and OpenAI Agents, Gemini is **not** auto-patched by the CLI `record`/`replay`
+runner, so an unwrapped client would run live and record nothing.
 
 Supported operations: sync `models.generate_content`, async `aio.models.generate_content`, and streaming
 `models.generate_content_stream` / `aio.models.generate_content_stream`. On replay, these calls return

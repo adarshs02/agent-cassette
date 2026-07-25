@@ -1,9 +1,26 @@
 # Agent-native closed operational loop (Phase E) — design
 
-Status: **implemented-pending-review** (2026-07-23). Base: accepted URI-redaction head `b1ba599`
-on `release/1.1.0`. This is the last feature phase for the unpublished `1.1.0`; it is not
-authorization to tag, push, PR, merge, or publish. The exact base/head SHAs are in the coding-agent
-handoff report.
+Status: **implemented-approved** (2026-07-23; trust corrections accepted 2026-07-24/25 at
+`5c2ce85`). Base: accepted URI-redaction head `b1ba599` on `release/1.1.0`. This is the last feature
+phase for the unpublished `1.1.0`; it is not authorization to tag, push, PR, merge, or publish.
+Implementation accepted at final head `5c2ce85` on `release/1.1.0`.
+
+**Final trust guarantees (as accepted).** All Phase E project I/O goes through one directory-FD /
+`O_NOFOLLOW` layer: every read, create-only publish, and atomic replace of an owned file
+(cassette, report, manifest, workflow, config, temporary) traverses verified directory FDs, never a
+path-based `open`/`mkdir`/`rename` that could follow a symlink out of the project. Owned files must
+be **regular and single-link** (`st_nlink == 1`) — a symlink, hard link, or non-regular object fails
+closed — and reads are validated by a **post-read `fstat`** of the same descriptor (regular,
+single-link, identity, and `st_size`/`st_mtime_ns`/`st_ctime_ns` stable) so an inode that gains a
+link or is rewritten mid-read is rejected, not blessed. Child recordings stage in a private
+`mkdtemp(0o700)` **outside** the consumer tree and are copied in via FD; the golden is snapshotted
+once and never reopened; `record` is create-only and `rerecord` revalidates the original identity
+immediately before a directory-relative atomic replace, preserving the old bytes on any pre-publish
+failure. Staging is removed on every exit including `KeyboardInterrupt`/`SystemExit`. Structured
+replay mismatches are **secret-safe**: inputs are exact-detached before any normalization/matching,
+diagnostics carry only code-owned, payload-free data (kind, one-based index, value-free changed
+paths, `remaining`), and unavailable secure primitives fail closed with exit `2` and no
+symlink-following fallback.
 
 ## Goal
 

@@ -1,11 +1,9 @@
 # Tool record/replay — Phase B design (generator streaming)
 
-Status: **implemented-pending-review** (2026-07-21; replay-envelope validation correction
-2026-07-22). Scope: **Phase B specification, implemented.** Base: accepted Phase A
-checkpoint `c7b4523` on `release/1.1.0`. Implementation: committed on `release/1.1.0`; the
-exact base/head SHAs are recorded in the coding-agent handoff report (the spec is committed
-together with the implementation, so its own commit hash cannot be embedded without
-invalidating it).
+Status: **implemented-approved** (2026-07-21; replay-envelope validation correction
+2026-07-22; accepted at `b1f1437`). Scope: **Phase B specification, implemented.** Base: accepted
+Phase A checkpoint `c7b4523` on `release/1.1.0`. Implementation accepted at corrected head
+`b1f1437` on `release/1.1.0`.
 
 Feature goal (all phases): replay a full agent loop without executing real tools. Phase B
 adds streaming tools. `1.1.0` stays unpublished until A, B, C1, C2, and D all pass.

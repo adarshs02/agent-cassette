@@ -7,7 +7,7 @@ and the repository's full current-dependency suite pass.
 | Surface | Supported range | Minimum gate | Current gate |
 | --- | --- | --- | --- |
 | Python | 3.10–3.13 | full suite on 3.10 | full suite on 3.13 |
-| OpenAI Python | `>=1.0,<3` | installed-wheel import and adapter smoke | locked SDK and full suite |
+| OpenAI Python | `>=1,<3` | installed-wheel import and adapter smoke | locked SDK and full suite |
 | Anthropic Python | `>=0.34,<1` | installed-wheel import and adapter smoke | locked SDK and full suite |
 | OpenAI Agents | `>=0.1,<1` | installed-wheel import and hooks smoke | locked SDK and full suite |
 | Mistral Python | `>=1,<2` | installed-wheel import and adapter smoke | locked SDK and full suite |

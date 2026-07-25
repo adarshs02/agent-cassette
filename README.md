@@ -60,7 +60,8 @@ For agents, there's a non-interactive machine loop: `agent-cassette setup/status
 | [Compatibility](docs/compatibility.md) | Supported provider and framework versions |
 | [Cassette schema](docs/cassette-schema.md) | JSONL event contract (v1) |
 | [CLI exit codes](docs/cli-exit-codes.md) | Exit-code contract for CI |
-| [Upgrades & migrations](docs/beta-upgrade.md) | Version history and cassette migrations |
+| [Changelog](CHANGELOG.md) | Version history and release notes (1.0.0 → 1.1.0) |
+| [Upgrades & migrations](docs/beta-upgrade.md) | Beta upgrade steps and cassette migrations |
 | [Security model](docs/security.md) | Secret redaction (fields, bearer tokens, and connection-URI credentials), replay safety, current limits |
 | [Public API](docs/public-api.md) | Exported surface |
 | [Adding a provider](docs/adding-a-provider.md) | Extend record/replay to a new SDK |

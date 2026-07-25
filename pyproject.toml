@@ -61,6 +61,11 @@ agent_cassette = "agent_cassette.pytest_plugin"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_cassette"]
 
+[tool.hatch.build.targets.sdist]
+# Ship source, docs, tests, and packaging metadata; never the machine-local agent/editor
+# tooling directories (also git-ignored). Keeps internal SDD process artifacts out of PyPI.
+exclude = [".superpowers", ".agents", ".codegraph", ".claude"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

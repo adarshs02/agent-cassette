@@ -290,6 +290,10 @@ all = [
 ]
 ```
 
+> This snippet is the state at the Mistral step; the current `all` extra in `pyproject.toml`
+> also includes the later `gemini` provider (`google-genai>=1,<2`). Always add the new
+> provider to both its own extra and the aggregate `all` extra.
+
 ## Step 6: Add CI matrix rows
 
 In `.github/workflows/ci.yml`, under the `installed-wheel-extras` job, add matrix rows for your provider:

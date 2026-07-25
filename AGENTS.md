@@ -83,40 +83,48 @@ run the explicit, approval-marked `rerecord`. Never relax matching or delete a c
 mismatch pass. `status.data.capture_coverage` distinguishes automatic capture (OpenAI, Anthropic,
 OpenAI Agents) from providers/frameworks needing an explicit wrapper.
 
-## Interactive setup ("set up agent cassette")
+## "Set up agent cassette"
 
-When a user asks a coding agent to "set up agent cassette" in their project, follow
-this flow. It needs no new tooling — use your own question tool plus the `init`
-commands above.
+When a user asks a coding agent to "set up agent cassette" in their project, drive the
+non-interactive closed loop above — it writes the config, scaffolds, and records a manifest
+in one machine-parseable pass, with no TTY. Prefer this over the legacy `init` flow.
 
-1. **Detect.** Run `agent-cassette init . --detect --dry-run --json`. Read
-   `detected.providers`, `detected.frameworks`, `detected.test_frameworks`, and the
-   planned files. This executes no project code and touches no dependencies.
-2. **Confirm with the user.** Ask one short multiple-choice round, prefilled from
-   detection:
-   - **Providers** to capture — `openai`, `anthropic`, `mistral`, `gemini`.
-   - **Frameworks** — `openai-agents`, `langchain`, `mcp`.
-   - **Test framework** — `pytest` (or `unittest`).
-   - **Match strictness** — `exact` (default), `subset`, `normalized`, `fuzzy`.
-   - **Cassette directory** — default `tests/cassettes`.
-3. **Write config.** Create `.agent-cassette.toml` from the answers before scaffolding
-   (`init` never overwrites an existing config; if one exists, edit it instead):
-   ```toml
-   schema_version = 1
-   cassette_dir = "tests/cassettes"
-   match = "exact"
-   strict = true
-   providers = ["openai"]
-   frameworks = ["langchain"]
-   test_frameworks = ["pytest"]
-   ```
-4. **Scaffold.** Run `agent-cassette init . --json`. The existing config is left
-   untouched; only the missing cassette directory and offline smoke test are created.
+1. **Preview (dry run).** Run `agent-cassette setup . --dry-run --json`. Detection is
+   static — it executes no project code, reads no environment values, and installs nothing.
+   Read `config` (configured + `detected` providers/frameworks/test-frameworks) and the
+   planned `files`.
+2. **Choose overrides (optional).** Detection fills sensible defaults; override only what the
+   user wants, via flags (repeatable where noted) rather than hand-editing config:
+   - `--provider NAME` (repeatable) — `openai`, `anthropic`, `mistral`, `gemini`.
+   - `--framework NAME` (repeatable) — `openai-agents`, `langchain`, `mcp`.
+   - `--test-framework NAME` — `pytest`.
+   - `--match {exact,subset,normalized,fuzzy}` (default `exact`), `--strict`/`--no-strict`.
+   - `--cassette-dir DIR` (default `tests/cassettes`).
+   - `--github-ci` to also own a replay-only CI workflow.
+   An override that disagrees with an existing `.agent-cassette.toml` is a **conflict**
+   (exit 2), never a silent overwrite.
+3. **Apply.** Run `agent-cassette setup . --apply --json` (add the same override flags). This
+   is create-only: it writes `.agent-cassette.toml`, the cassette-dir `.gitkeep`, the offline
+   smoke test, and (with `--github-ci`) the replay workflow, and records every generated
+   file's SHA-256 in `.agent-cassette/manifest.json`. A file whose bytes differ from the
+   generated content is a conflict, never overwritten.
+4. **Confirm state.** Run `agent-cassette status . --json`: read `readiness`
+   (`setup_ready`/`record_ready`/`replay_ready`/`ci_ready`), `managed_files`, `cassettes`,
+   and any `blockers`. `agent-cassette agent-manifest . --json` describes the full
+   command/exit/safety surface for planning the next action.
 5. **Verify.** Run `pytest tests/test_agent_cassette_smoke.py`, confirm offline replay
    passes, and report the files created.
 
-Treat `--check` exit 1 as "changes needed" and exit 2 from any init mode as invalid or
-conflicting state.
+Treat `--check` exit 1 as "changes needed" and exit 2 as invalid or conflicting state; follow
+each command's `next_actions` argv vector.
+
+### Legacy `init` (lower-level alternative)
+
+The interactive `init` flow (`agent-cassette init . --detect [--dry-run|--check] --json`, see
+"Consumer project initialization" above) remains supported for callers that want to write the
+config themselves and scaffold without a manifest. It never overwrites an existing config or
+runs consumer code. Prefer `setup` for new projects; reach for `init` only when you need the
+lower-level, manifest-free path.
 
 ## Validation
 
