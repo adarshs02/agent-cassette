@@ -271,6 +271,9 @@ jobs:
                   def model_dump(self, mode=None):
                       return {"id": self.id, "output_text": self.output_text}
 
+              # Intentional code-owned SDK-root fake for trusted serialization.
+              Response.__module__ = "openai"
+
               class Responses:
                   def create(self, **kwargs):
                       return Response("response-1", kwargs["input"].upper())
@@ -300,6 +303,9 @@ jobs:
 
                   def model_dump(self, mode=None):
                       return {"id": self.id, "text": self.text}
+
+              # Intentional code-owned SDK-root fake for trusted serialization.
+              Message.__module__ = "anthropic"
 
               class Messages:
                   def create(self, **kwargs):
@@ -370,6 +376,9 @@ jobs:
                   def __init__(self, text): self.text = text
                   def model_dump(self, mode=None): return {"text": self.text}
 
+              # Intentional code-owned SDK-root fake for trusted serialization.
+              Resp.__module__ = "mistralai"
+
               class Chat:
                   def complete(self, **kw): return Resp(kw["messages"][0]["content"].upper())
 
@@ -393,6 +402,9 @@ jobs:
                   def model_dump(self, mode=None): return {"raw": self._value}
                   @property
                   def text(self): return self._value.upper()
+
+              # Intentional code-owned SDK-root fake for trusted serialization.
+              Resp.__module__ = "google.genai"
 
               class Models:
                   def generate_content(self, **kw): return Resp(kw["contents"])
