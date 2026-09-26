@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -128,20 +129,22 @@ def run_scenario(
                 sleep=time.sleep if mode == "live" else (lambda s: None),
             )
     except ReplayMismatchError as error:
+        tail = "".join(traceback.format_exc().splitlines(keepends=True)[-15:])
         return ScenarioResult(
             scenario.name,
             "error",
             final_stage=state.stage.value,
             wall_s=round(time.perf_counter() - started, 2),
-            error=f"replay diverged: {error}",
+            error=f"replay diverged: {error}\n{tail}",
         )
     except Exception as error:  # noqa: BLE001 - one scenario must not abort the suite
+        tail = "".join(traceback.format_exc().splitlines(keepends=True)[-15:])
         return ScenarioResult(
             scenario.name,
             "error",
             final_stage=state.stage.value,
             wall_s=round(time.perf_counter() - started, 2),
-            error=f"{type(error).__name__}: {error}",
+            error=f"{type(error).__name__}: {error}\n{tail}",
         )
 
     if scenario.kind == "robustness" and scenario.name == "datahub_timeout":

@@ -35,12 +35,14 @@ def write_results(results: list[ScenarioResult], mode: str, results_dir: Path) -
     )
     by_name = {r.scenario: r for r in results}
     faults_ok = sum(1 for f in FAULTS if by_name.get(f) and by_name[f].status == "passed")
-    controls_fp = sum(1 for c in CONTROLS if by_name.get(c) and by_name[c].status != "passed")
+    controls_fp = sum(1 for c in CONTROLS if by_name.get(c) and by_name[c].status == "failed")
+    not_graded = [r.scenario for r in results if r.status in ("skipped", "error")]
     lines = [
         f"# Retrace eval — {mode} (run {run})",
         "",
         f"- Faults correct: {faults_ok}/{len(FAULTS)}",
         f"- Control false positives: {controls_fp}/{len(CONTROLS)}",
+        f"- Not graded (skipped/error): {', '.join(not_graded) if not_graded else 'none'}",
         f"- Total wall time: {sum(r.wall_s for r in results):.1f}s",
         f"- Cost: {_cost(results)}",
         "",

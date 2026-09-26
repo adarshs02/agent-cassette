@@ -3,7 +3,7 @@ import json
 from retrace.config import Settings
 from retrace.datahub.fake import FakeDataHubSession
 from retrace.datahub.mcp_client import DataHubConnection
-from retrace.evals.runner import MANIFEST, run_eval, run_scenario
+from retrace.evals.runner import MANIFEST, ScenarioResult, run_eval, run_scenario
 from retrace.evals.scenarios import SCENARIOS, get_scenario
 from retrace.evals.scorecard import write_results
 from retrace.testing import ScriptedModel, unit_cents_script
@@ -90,3 +90,40 @@ def test_scorecard(tmp_path):
     text = path.read_text()
     assert "| bad_repair_rejected | passed |" in text
     assert (tmp_path / "results" / "run_0001.json").exists()
+
+
+def test_scorecard_only_counts_failed_controls_as_false_positives(tmp_path):
+    results = [
+        ScenarioResult("control_healthy", "skipped", error="no cassette recorded yet"),
+        ScenarioResult("control_distractor", "passed"),
+        ScenarioResult("unit_cents", "error", error="boom"),
+    ]
+    text = write_results(results, "replay", tmp_path / "results").read_text()
+    assert "Control false positives: 0/2" in text
+    not_graded_line = next(line for line in text.splitlines() if "Not graded" in line)
+    assert "control_healthy" in not_graded_line
+    assert "unit_cents" in not_graded_line
+
+
+def test_scorecard_counts_a_failed_control_as_false_positive(tmp_path):
+    results = [
+        ScenarioResult("control_healthy", "failed"),
+        ScenarioResult("control_distractor", "passed"),
+    ]
+    text = write_results(results, "replay", tmp_path / "results").read_text()
+    assert "Control false positives: 1/2" in text
+    not_graded_line = next(line for line in text.splitlines() if "Not graded" in line)
+    assert "none" in not_graded_line
+
+
+def test_errored_scenario_keeps_traceback(tmp_path, monkeypatch):
+    kw = {"settings": Settings(), "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("retrace.evals.runner.run_agent", boom)
+    result = run_scenario(get_scenario("unit_cents"), "live", ingest=False, **kw, **FACTORIES)
+    assert result.status == "error"
+    assert "RuntimeError: boom" in result.error
+    assert "Traceback" in result.error or 'File "' in result.error
