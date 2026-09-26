@@ -58,11 +58,11 @@ def unified_diff(original_dir: Path, patched: dict[str, str]) -> str:
     return "".join(chunks)
 
 
-def _stem(file: str) -> str:
-    stem = file.removesuffix(".sql")
-    if not file or stem not in TRANSFORM_ORDER or file not in (stem, f"{stem}.sql"):
+def _stem(value: str, *, label: str = "file") -> str:
+    stem = value.removesuffix(".sql")
+    if not value or stem not in TRANSFORM_ORDER or value not in (stem, f"{stem}.sql"):
         raise RepairRejected(
-            f"file must be one of {[f'{n}.sql' for n in TRANSFORM_ORDER]}, got {file!r}"
+            f"{label} must be one of {[f'{n}.sql' for n in TRANSFORM_ORDER]}, got {value!r}"
         )
     return stem
 
@@ -78,6 +78,7 @@ class Repairer:
         self, file: str, new_sql: str, root_asset: str, accepted: dict[str, str]
     ) -> RepairOutcome:
         stem = _stem(file)
+        accepted_stems = {_stem(key, label="accepted key"): sql for key, sql in accepted.items()}
         allowed = allowed_repair_targets(root_asset)
         if stem not in allowed:
             raise RepairRejected(
@@ -90,7 +91,7 @@ class Repairer:
             shutil.rmtree(scratch)
         scratch.mkdir(parents=True)
         shutil.copytree(self.ws.transforms, scratch / "transforms")
-        patched = {**accepted, stem: new_sql}
+        patched = {**accepted_stems, stem: new_sql}
         for name, sql in patched.items():
             (scratch / "transforms" / f"{name}.sql").write_text(sql)
         diff = unified_diff(self.ws.transforms, patched)

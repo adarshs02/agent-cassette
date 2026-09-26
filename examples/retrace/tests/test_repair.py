@@ -70,3 +70,32 @@ def test_rejects_target_not_downstream_of_root_cause(tmp_path, baseline):
         Repairer(ws, baseline, tmp_path / "s").propose(
             "stg_customers.sql", "SELECT 1", "raw.raw_orders", accepted={}
         )
+
+
+def test_rejects_bad_accepted_keys_before_writing(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    repairer = Repairer(ws, baseline, tmp_path / "scratch")
+    with pytest.raises(RepairRejected):
+        repairer.propose(
+            "stg_orders.sql",
+            "SELECT 1",
+            "raw.raw_orders",
+            accepted={"../../evil": "SELECT 1"},
+        )
+    assert repairer.attempts == 0
+    assert not (tmp_path / "scratch").exists()
+    assert not (tmp_path / "evil.sql").exists()
+    assert not any(tmp_path.rglob("evil*"))
+
+
+def test_valid_accepted_target_is_allowed_and_covered_in_diff(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    repairer = Repairer(ws, baseline, tmp_path / "scratch")
+    sql = get_fault("unit_cents").reference_patch["stg_orders"]
+    first = repairer.propose("stg_orders.sql", sql, "raw.raw_orders", accepted={})
+    assert first.passed, first.failed_checks
+
+    second = repairer.propose("stg_orders.sql", sql, "raw.raw_orders", accepted={"stg_orders": sql})
+    assert second.passed, second.failed_checks
+    assert "a/stg_orders.sql" in second.diff
+    assert repairer.attempts == 2
