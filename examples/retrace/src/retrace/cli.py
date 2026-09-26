@@ -23,24 +23,28 @@ def _settings(args: argparse.Namespace) -> Settings:
 
 def _eval(args: argparse.Namespace) -> int:
     from retrace.evals.runner import run_eval
+    from retrace.evals.scenarios import get_scenario
     from retrace.evals.scorecard import write_results
 
     mode = "live" if args.live else "replay"
     names = [n for n in args.scenarios.split(",") if n] if args.scenarios else None
     if WORK_ROOT.exists():
         shutil.rmtree(WORK_ROOT)
+    # Validate scenario names before calling run_eval
     try:
-        results = run_eval(
-            mode,
-            names,
-            settings=_settings(args),
-            cassette_dir=CASSETTE_DIR,
-            work_root=WORK_ROOT,
-            trials=args.trials,
-        )
+        for n in names or []:
+            get_scenario(n)
     except KeyError as error:
         print(error, file=sys.stderr)
         return 2
+    results = run_eval(
+        mode,
+        names,
+        settings=_settings(args),
+        cassette_dir=CASSETTE_DIR,
+        work_root=WORK_ROOT,
+        trials=args.trials,
+    )
     path = write_results(results, mode, RESULTS_DIR)
     print(path.read_text())
     skipped = [r.scenario for r in results if r.status == "skipped"]
