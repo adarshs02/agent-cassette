@@ -54,6 +54,7 @@ class IncidentState:
     patched: dict[str, str] = field(default_factory=dict)
     verification: list[dict[str, Any]] | None = None
     written_back: bool = False
+    writeback_urns: list[str] = field(default_factory=list)
     final_report: str | None = None
     failure_reason: str | None = None
 

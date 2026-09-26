@@ -253,3 +253,100 @@ def test_confirm_then_escalate_clears_root_cause_and_claims_escalation(executor)
     assert out == {"accepted": True, "stage": "ESCALATED"}
     assert ex.state.root_cause is None
     assert ex.state.claimed() is ex.state.escalation
+
+
+def _confirm(ex):
+    ex.dispatch(
+        "datahub_lineage",
+        {"urn": dataset_urn("marts.exec_metric"), "direction": "upstream", "max_hops": 3},
+    )
+    ex.dispatch("profile_column", {"table": "raw.raw_orders", "column": "amount"})
+    out = ex.dispatch(
+        "confirm_root_cause",
+        {
+            "asset": "raw.raw_orders",
+            "field": "amount",
+            "summary": "root",
+            "evidence_ids": ["ev_001", "ev_002"],
+        },
+    )
+    assert out["accepted"] is True
+
+
+def test_escalate_after_failed_repair_is_accepted(executor):
+    ex = executor
+    _confirm(ex)
+    bad = ex.transforms.read("stg_orders")
+    out = ex.dispatch("propose_repair", {"file": "stg_orders.sql", "new_sql": bad})
+    assert out["passed"] is False and ex.state.stage is Stage.REPAIRING
+    out = ex.dispatch(
+        "escalate_upstream",
+        {
+            "asset": "raw.raw_orders",
+            "field": "amount",
+            "reason": "the feed itself is wrong",
+            "evidence_ids": ["ev_001", "ev_002"],
+        },
+    )
+    assert out == {"accepted": True, "stage": "ESCALATED"}
+    assert ex.state.stage is Stage.ESCALATED and ex.state.root_cause is None
+    sql = get_fault("unit_cents").reference_patch["stg_orders"]
+    out = ex.dispatch("propose_repair", {"file": "stg_orders.sql", "new_sql": sql})
+    assert "error" in out and ex.state.stage is Stage.ESCALATED
+
+
+def test_declare_no_incident_rejects_string_evidence_ids(executor):
+    ex = executor
+    ex.dispatch("get_metric_history", {"days": 7})
+    out = ex.dispatch("declare_no_incident", {"summary": "fine", "evidence_ids": "ev_001"})
+    assert "error" in out and "evidence_ids must be a list of strings" in out["error"]
+    assert ex.state.stage is Stage.INVESTIGATING
+
+
+def test_claim_rejects_string_evidence_ids(executor):
+    ex = executor
+    ex.dispatch("profile_column", {"table": "raw.raw_orders", "column": "amount"})
+    out = ex.dispatch(
+        "confirm_root_cause",
+        {"asset": "raw.raw_orders", "summary": "s", "evidence_ids": "ev_001"},
+    )
+    assert "error" in out and "evidence_ids must be a list of strings" in out["error"]
+    assert ex.state.root_cause is None
+
+
+class _DocUrnSession(FakeDataHubSession):
+    async def call_tool(self, name, arguments=None):
+        if name == "save_document":
+            from retrace.datahub.fake import _ok
+
+            self.calls.append((name, dict(arguments or {})))
+            return _ok({"success": True, "urn": "urn:li:document:retrace-1"})
+        return await super().call_tool(name, arguments)
+
+
+def test_write_back_records_document_urn(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    conn = DataHubConnection.from_session(_DocUrnSession())
+    state = IncidentState(scenario="unit_cents", report="r")
+    ex = ToolExecutor(
+        state,
+        Warehouse(ws.warehouse, baseline),
+        Transforms(ws),
+        Repairer(ws, baseline, tmp_path / "scratch"),
+        DataHubTools(conn),
+    )
+    try:
+        _confirm(ex)
+        sql = get_fault("unit_cents").reference_patch["stg_orders"]
+        ex.dispatch("propose_repair", {"file": "stg_orders.sql", "new_sql": sql})
+        out = ex.dispatch("write_back", {"summary": "fixed"})
+    finally:
+        conn.close()
+    assert out == {"written_back": True, "stage": "WRITTEN_BACK"}
+    assert state.writeback_urns == ["urn:li:document:retrace-1"]
+    assert state.to_dict()["writeback_urns"] == ["urn:li:document:retrace-1"]
+
+
+def test_writeback_urns_default_empty():
+    state = IncidentState(scenario="s", report="r")
+    assert state.writeback_urns == [] and state.to_dict()["writeback_urns"] == []

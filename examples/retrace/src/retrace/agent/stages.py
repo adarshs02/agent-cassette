@@ -10,7 +10,7 @@ ALLOWED: dict[Stage, frozenset[Stage]] = {
         {Stage.ROOT_CAUSE_CONFIRMED, Stage.NO_INCIDENT, Stage.ESCALATED}
     ),
     Stage.ROOT_CAUSE_CONFIRMED: frozenset({Stage.REPAIRING, Stage.ESCALATED}),
-    Stage.REPAIRING: frozenset({Stage.VERIFIED}),
+    Stage.REPAIRING: frozenset({Stage.VERIFIED, Stage.ESCALATED}),
     Stage.VERIFIED: frozenset({Stage.WRITTEN_BACK}),
     Stage.WRITTEN_BACK: frozenset(),
     Stage.NO_INCIDENT: frozenset(),

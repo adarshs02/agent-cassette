@@ -170,10 +170,16 @@ class ToolExecutor:
     def t_run_checks(self) -> dict[str, Any]:
         return self._fact("pipeline", "checks", "invariant suite", self.warehouse.run_checks())
 
-    def _claim(self, asset: str, field: str | None, summary: str, evidence_ids: list[str]) -> Claim:
-        self._need_str(asset=asset, summary=summary)
+    @staticmethod
+    def _need_ids(evidence_ids: Any) -> list[str]:
+        # A bare string must not be split into characters by list().
         if not isinstance(evidence_ids, list) or not all(isinstance(i, str) for i in evidence_ids):
             raise TypeError("evidence_ids must be a list of strings")
+        return list(evidence_ids)
+
+    def _claim(self, asset: str, field: str | None, summary: str, evidence_ids: list[str]) -> Claim:
+        self._need_str(asset=asset, summary=summary)
+        evidence_ids = self._need_ids(evidence_ids)
         check_claim_evidence(self.store, asset, evidence_ids)
         return Claim(table_name(asset), field, summary, list(evidence_ids))
 
@@ -200,7 +206,7 @@ class ToolExecutor:
 
     def t_declare_no_incident(self, summary: str, evidence_ids: list[str]) -> dict[str, Any]:
         self._need_str(summary=summary)
-        check_no_incident_evidence(self.store, list(evidence_ids))
+        check_no_incident_evidence(self.store, self._need_ids(evidence_ids))
         advance(self.state, Stage.NO_INCIDENT)
         self.state.no_incident_summary = summary
         return {"accepted": True, "stage": self.state.stage.value}
@@ -242,8 +248,13 @@ class ToolExecutor:
         result = self.datahub.write_back(
             dataset_urn(claim.asset), f"Retrace incident: {self.state.scenario}", summary
         )
+        # The document URN is kept on state for live cleanup; it is never sent to the
+        # model (it is a server-generated id, which would break replay determinism).
+        urn = result.get("document_urn") if isinstance(result, dict) else None
+        if isinstance(urn, str) and urn not in self.state.writeback_urns:
+            self.state.writeback_urns.append(urn)
         if _is_error(result):
-            return result
+            return {"error": result["error"]}
         self.state.written_back = True
         if self.state.stage is Stage.VERIFIED:
             advance(self.state, Stage.WRITTEN_BACK)
