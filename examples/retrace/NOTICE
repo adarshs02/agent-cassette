@@ -1,0 +1,11 @@
+Retrace
+Copyright 2026 Adarsh Srinivasan
+
+This example includes files adapted from Project Blackbox
+(https://github.com/alejandro-publius/blackbox-datahub), Copyright its authors,
+licensed under the Apache License, Version 2.0 (see LICENSE-APACHE).
+Adapted files carry a header comment and were modified for Retrace:
+- src/retrace/pipeline/generate.py (synthetic fixture design)
+- src/retrace/pipeline/transforms/*.sql
+- src/retrace/pipeline/checks.py (invariant patterns)
+- src/retrace/datahub/catalog.py (dataset and field documentation)
