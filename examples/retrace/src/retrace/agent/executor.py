@@ -6,6 +6,8 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+import duckdb
+
 from retrace.agent.evidence import (
     EvidenceStore,
     GateError,
@@ -70,6 +72,8 @@ class ToolExecutor:
         }
 
     def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if self.finished:
+            return {"error": "run already finished"}
         handler = self._handlers.get(name)
         if handler is None:
             return {"error": f"unknown tool {name!r}"}
@@ -81,6 +85,8 @@ class ToolExecutor:
             return {"error": f"bad arguments for {name}: {error}"}
         except (GateError, RepairRejected, SqlRejected, SqlTimeout, ValueError) as error:
             return {"error": str(error)}
+        except (duckdb.Error, OSError) as error:
+            return {"error": f"{type(error).__name__}: {error}"}
 
     def _fact(self, source: str, kind: str, summary: str, result: Any) -> dict[str, Any]:
         if _is_error(result):
@@ -93,6 +99,14 @@ class ToolExecutor:
         for key, value in values.items():
             if not isinstance(value, str) or not value:
                 raise TypeError(f"{key} must be a non-empty string")
+
+    @staticmethod
+    def _need_day_count(name: str, value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer")
+        if not (1 <= value <= 90):
+            raise ValueError(f"{name} must be between 1 and 90")
+        return value
 
     def t_datahub_search(self, query: str) -> dict[str, Any]:
         self._need_str(query=query)
@@ -114,19 +128,21 @@ class ToolExecutor:
         )
 
     def t_get_metric_history(self, days: int = 30) -> dict[str, Any]:
+        days = self._need_day_count("days", days)
         return self._fact(
             "warehouse",
             "metric_history",
             "KPI and recent revenue",
-            self.warehouse.metric_history(int(days)),
+            self.warehouse.metric_history(days),
         )
 
     def t_compare_to_baseline(self, last_days: int = 14) -> dict[str, Any]:
+        last_days = self._need_day_count("last_days", last_days)
         return self._fact(
             "warehouse",
             "baseline_comparison",
             "revenue vs baseline",
-            self.warehouse.compare_to_baseline(int(last_days)),
+            self.warehouse.compare_to_baseline(last_days),
         )
 
     def t_profile_column(
@@ -164,6 +180,8 @@ class ToolExecutor:
     def t_confirm_root_cause(
         self, asset: str, summary: str, evidence_ids: list[str], field: str | None = None
     ) -> dict[str, Any]:
+        if self.state.root_cause is not None:
+            raise GateError("root cause already confirmed")
         claim = self._claim(asset, field, summary, evidence_ids)
         advance(self.state, Stage.ROOT_CAUSE_CONFIRMED)
         self.state.root_cause = claim
@@ -172,9 +190,12 @@ class ToolExecutor:
     def t_escalate_upstream(
         self, asset: str, reason: str, evidence_ids: list[str], field: str | None = None
     ) -> dict[str, Any]:
+        if self.state.escalation is not None:
+            raise GateError("already escalated")
         claim = self._claim(asset, field, reason, evidence_ids)
         advance(self.state, Stage.ESCALATED)
         self.state.escalation = claim
+        self.state.root_cause = None
         return {"accepted": True, "stage": self.state.stage.value}
 
     def t_declare_no_incident(self, summary: str, evidence_ids: list[str]) -> dict[str, Any]:
@@ -213,6 +234,8 @@ class ToolExecutor:
 
     def t_write_back(self, summary: str) -> dict[str, Any]:
         self._need_str(summary=summary)
+        if self.state.written_back:
+            raise GateError("already written back")
         claim = self.state.claimed()
         if self.state.stage not in (Stage.VERIFIED, Stage.ESCALATED) or claim is None:
             raise GateError("write_back is allowed after a verified repair or an escalation")

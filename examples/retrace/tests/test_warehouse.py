@@ -32,6 +32,11 @@ def test_run_sql_rejects_non_queries(tools, query):
         tools.run_sql(query)
 
 
+def test_run_sql_rejects_host_file_access(tools):
+    with pytest.raises(SqlRejected):
+        tools.run_sql("SELECT * FROM read_csv('/etc/passwd')")
+
+
 def test_run_sql_truncates(tools):
     out = tools.run_sql("SELECT * FROM staging.stg_orders")
     assert out["truncated"] is True

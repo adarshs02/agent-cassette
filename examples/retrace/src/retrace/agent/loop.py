@@ -99,7 +99,7 @@ def run_agent(
         usage = _get(response, "usage")
         stats.input_tokens += int(_get(usage, "input_tokens") or 0)
         stats.output_tokens += int(_get(usage, "output_tokens") or 0)
-        blocks = _plain_blocks(response)
+        blocks = _plain_blocks(response) or [{"type": "text", "text": "(no content)"}]
         messages.append({"role": "assistant", "content": blocks})
         tool_uses = [b for b in blocks if b["type"] == "tool_use"]
         if not tool_uses:
@@ -116,6 +116,16 @@ def run_agent(
             continue
         results: list[dict[str, Any]] = []
         for use in tool_uses:
+            if executor.finished:
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": use["id"],
+                        "content": "run already finished",
+                        "is_error": True,
+                    }
+                )
+                continue
             stats.tool_calls += 1
             key = (use["name"], json.dumps(use["input"], sort_keys=True))
             if key == last_call:

@@ -66,7 +66,9 @@ class Warehouse:
         self.baseline = baseline
 
     def _execute(self, sql: str, params: tuple[Any, ...] = ()) -> tuple[list[str], list[tuple]]:
-        con = duckdb.connect(str(self.path), read_only=True)
+        con = duckdb.connect(
+            str(self.path), read_only=True, config={"enable_external_access": False}
+        )
         timer = threading.Timer(QUERY_TIMEOUT_S, con.interrupt)
         try:
             con.execute("SET threads TO 1")
