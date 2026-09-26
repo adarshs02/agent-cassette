@@ -13,7 +13,14 @@ a value defined outside those roots is never read or called. Unsupported Python 
 are rejected instead of invoking their `str` or `repr` methods.
 
 Redaction runs before persistence when enabled. It recursively covers common
-authorization, API-key, token, secret, and password fields and bearer values. It also
+authorization, API-key, token, secret, and password fields and bearer values. One narrow,
+value-aware exemption applies: a plain `int` (not a `bool` or string) under a
+count-shaped key ending in `tokens` or `token_count`/`TokenCount` (SDK usage counters
+such as `input_tokens`, `max_tokens`, `prompt_token_count`) is kept, because it is a
+count, not a credential. Any other value under a token-named key (`token`, `otp_token`,
+`{"tokens": {...}}`, a string under `input_tokens`) is still redacted. For replay
+matching only, such integer counts are folded to `[REDACTED]`, so cassettes recorded
+before the exemption still match. It also
 scrubs credentials embedded in hierarchical connection URIs: the password in
 `scheme://user:password@host` userinfo (using the last `@` so an unescaped `@` inside a
 password is still removed) and secret-named URL query values

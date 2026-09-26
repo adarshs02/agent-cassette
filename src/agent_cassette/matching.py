@@ -7,7 +7,7 @@ from copy import deepcopy
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
-from agent_cassette.redaction import redact
+from agent_cassette.redaction import REDACTED, is_token_count_field, redact
 
 MatchMode = Literal["exact", "subset", "normalized", "fuzzy"]
 InputMatcher = Callable[[Any, Any], bool]
@@ -16,11 +16,32 @@ DEFAULT_FUZZY_THRESHOLD = 0.9
 
 
 def normalize_input(value: Any, ignore_paths: tuple[str, ...] = ()) -> Any:
-    """Redact an input and remove explicitly ignored dotted paths."""
-    normalized = deepcopy(redact(value))
+    """Redact an input and remove explicitly ignored dotted paths.
+
+    For matching only, integer token counts (see
+    :func:`~agent_cassette.redaction.is_token_count_field`) are folded to the redaction
+    marker, so cassettes recorded before the token-count exemption (which persisted the
+    marker) and newer ones (which persist the int) both match a live request. Persisted
+    cassettes are unaffected.
+    """
+    normalized = _fold_token_counts(deepcopy(redact(value)))
     for path in ignore_paths:
         _remove_path(normalized, path.split("."))
     return normalized
+
+
+def _fold_token_counts(value: Any) -> Any:
+    # ``redact`` already bounded depth and rejected cycles, so plain recursion is safe here.
+    if isinstance(value, dict):
+        return {
+            key: REDACTED if is_token_count_field(key, item) else _fold_token_counts(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_fold_token_counts(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_fold_token_counts(item) for item in value)
+    return value
 
 
 def inputs_match(

@@ -78,9 +78,24 @@ def _redact_at(value: Any, *, depth: int, active: set[int]) -> Any:
     return value
 
 
+def is_token_count_field(key: object, value: object) -> bool:
+    """Return True for a plain ``int`` under a count-shaped secret-looking key.
+
+    This is the single predicate for the token-count exemption: redaction keeps such
+    values, and replay matching (:func:`agent_cassette.matching.normalize_input`) folds
+    them to the redaction marker so v1.0 cassettes (which stored the marker) still match.
+    """
+    return (
+        isinstance(key, str)
+        and _SECRET_KEY.search(key) is not None
+        and _TOKEN_COUNT_KEY.search(key) is not None
+        and type(value) is int
+    )
+
+
 def _redact_dict_entry(key: object, item: Any, *, depth: int, active: set[int]) -> Any:
     if isinstance(key, str) and _SECRET_KEY.search(key):
-        if _TOKEN_COUNT_KEY.search(key) and type(item) is int:
+        if is_token_count_field(key, item):
             return item  # an integer usage/token count under a count-shaped key, not a secret
         return REDACTED
     return _redact_at(item, depth=depth, active=active)

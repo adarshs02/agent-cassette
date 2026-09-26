@@ -109,6 +109,14 @@ Phase E closed loop passed acceptance, then shipped as one release. No new publi
   parameters such as `?token=`/`?auth_token=`. `_SECRET_KEY` itself is
   unchanged; the exemption is a narrow, value-aware check applied only in
   the dict-key redaction path.
+  Compatibility: cassettes recorded with v1.0.0 persisted these counts as
+  `"[REDACTED]"` (e.g. `"max_tokens": "[REDACTED]"`). Replay input
+  normalization — for matching only — folds integer token-count values to
+  the redaction marker (via the same shared `is_token_count_field`
+  predicate), so both v1.0 cassettes and new int-bearing cassettes still
+  match live requests instead of raising `ReplayMismatchError`. Persisted
+  cassettes keep the ints. A consequence is that replay matching does not
+  distinguish two different integer token counts (as in v1.0).
 
 ### Security
 - Connection-URI credential redaction: the recursive `redact()` path (recorder, hybrid,
