@@ -15,14 +15,19 @@ from retrace.agent.prompts import SYSTEM_PROMPT, TOOL_SCHEMAS, initial_prompt
 from retrace.agent.stages import fail
 from retrace.agent.state import IncidentState
 
-RETRYABLE = (
+# OverloadedError (HTTP 529) only exists in newer SDKs; include it when present.
+_OVERLOADED: type[BaseException] | None = getattr(anthropic, "OverloadedError", None)
+RETRYABLE: tuple[type[BaseException], ...] = (
     anthropic.RateLimitError,
     anthropic.APIConnectionError,
     anthropic.InternalServerError,
+    *((_OVERLOADED,) if _OVERLOADED is not None else ()),
     ConnectionError,
     TimeoutError,
 )
 MAX_ATTEMPTS = 4
+MAX_TOKENS = 16000
+TRUNCATED_TOOL_USE = "response was truncated at max_tokens; retry with a shorter reply"
 
 
 @dataclass
@@ -44,7 +49,18 @@ def _plain_blocks(response: Any) -> list[dict[str, Any]]:
     blocks = []
     for block in _get(response, "content"):
         kind = _get(block, "type")
-        if kind == "text":
+        if kind == "thinking":
+            # Thinking blocks must go back verbatim (with their signature) and in order.
+            blocks.append(
+                {
+                    "type": "thinking",
+                    "thinking": _get(block, "thinking"),
+                    "signature": _get(block, "signature"),
+                }
+            )
+        elif kind == "redacted_thinking":
+            blocks.append({"type": "redacted_thinking", "data": _get(block, "data")})
+        elif kind == "text":
             blocks.append({"type": "text", "text": _get(block, "text")})
         elif kind == "tool_use":
             blocks.append(
@@ -65,7 +81,7 @@ def _create(
         try:
             return client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=MAX_TOKENS,
                 system=[
                     {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
                 ],
@@ -101,7 +117,28 @@ def run_agent(
         stats.output_tokens += int(_get(usage, "output_tokens") or 0)
         blocks = _plain_blocks(response) or [{"type": "text", "text": "(no content)"}]
         messages.append({"role": "assistant", "content": blocks})
+        stop_reason = _get(response, "stop_reason")
+        if stop_reason == "refusal":
+            fail(state, "model refused")
+            return stats
         tool_uses = [b for b in blocks if b["type"] == "tool_use"]
+        if tool_uses and stop_reason == "max_tokens":
+            # A truncated reply may carry incomplete tool input: never dispatch it.
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": use["id"],
+                            "content": TRUNCATED_TOOL_USE,
+                            "is_error": True,
+                        }
+                        for use in tool_uses
+                    ],
+                }
+            )
+            continue
         if not tool_uses:
             if nudges >= max_nudges:
                 fail(state, "model stopped calling tools without finishing")

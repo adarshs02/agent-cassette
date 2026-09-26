@@ -96,7 +96,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     _tool("run_checks", "Run the pipeline invariant suite on the current warehouse.", {}, []),
     _tool(
         "confirm_root_cause",
-        "Confirm a root cause with cited evidence.",
+        (
+            "Confirm a root cause with cited evidence."
+            " asset: table name like raw.raw_orders or its DataHub URN; field: column name."
+        ),
         {
             "asset": _STR,
             "field": _STR,
@@ -107,7 +110,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     ),
     _tool(
         "escalate_upstream",
-        "Escalate an upstream data problem with cited evidence. No repair is allowed afterwards.",
+        (
+            "Escalate an upstream data problem with cited evidence."
+            " No repair is allowed afterwards."
+            " asset: table name like raw.raw_orders or its DataHub URN; field: column name."
+        ),
         {
             "asset": _STR,
             "field": _STR,

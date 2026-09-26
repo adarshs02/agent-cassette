@@ -166,3 +166,160 @@ def test_empty_content_reply_is_nudged_not_crashed(tmp_path, baseline):
     second_request_messages = model.requests[1]["messages"]
     first_assistant = next(m for m in second_request_messages if m["role"] == "assistant")
     assert first_assistant["content"] == [{"type": "text", "text": "(no content)"}]
+
+
+def _executor(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    conn = DataHubConnection.from_session(FakeDataHubSession())
+    state = IncidentState(scenario="unit_cents", report="r")
+    ex = ToolExecutor(
+        state,
+        Warehouse(ws.warehouse, baseline),
+        Transforms(ws),
+        Repairer(ws, baseline, tmp_path / "scratch"),
+        DataHubTools(conn),
+    )
+    return state, ex, conn
+
+
+class _RawModel:
+    """Returns fully custom responses: (content blocks, stop_reason) per turn."""
+
+    def __init__(self, turns: list[tuple[list[dict[str, Any]], str]]) -> None:
+        self._turns = turns
+        self.requests: list[dict[str, Any]] = []
+        self.snapshots: list[list[dict[str, Any]]] = []
+        self.messages = self
+
+    def create(self, **kwargs: Any) -> Message:
+        import copy
+
+        self.requests.append(kwargs)
+        self.snapshots.append(copy.deepcopy(kwargs["messages"]))
+        index = len(self.requests)
+        content, stop = (
+            self._turns[index - 1]
+            if index <= len(self._turns)
+            else ([{"type": "text", "text": "done"}], "end_turn")
+        )
+        return Message.model_validate(
+            {
+                "id": f"msg_{index:03d}",
+                "type": "message",
+                "role": "assistant",
+                "model": kwargs["model"],
+                "content": content,
+                "stop_reason": stop,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
+
+
+def test_thinking_blocks_are_passed_back_verbatim_in_order(tmp_path, baseline):
+    first = [
+        {"type": "thinking", "thinking": "look at history", "signature": "sig-1"},
+        {"type": "redacted_thinking", "data": "opaque"},
+        {"type": "text", "text": "Checking."},
+        {"type": "tool_use", "id": "toolu_1", "name": "get_metric_history", "input": {"days": 7}},
+    ]
+    finish = [
+        {"type": "tool_use", "id": "toolu_2", "name": "finish", "input": {"report": "r"}},
+    ]
+    state, ex, conn = _executor(tmp_path, baseline)
+    model = _RawModel([(first, "tool_use"), (finish, "tool_use")])
+    try:
+        run_agent(model, ex, state, model="m", sleep=lambda s: None)
+    finally:
+        conn.close()
+    assistant = model.snapshots[1][1]
+    assert assistant["role"] == "assistant"
+    assert assistant["content"] == [
+        {"type": "thinking", "thinking": "look at history", "signature": "sig-1"},
+        {"type": "redacted_thinking", "data": "opaque"},
+        {"type": "text", "text": "Checking."},
+        {"type": "tool_use", "id": "toolu_1", "name": "get_metric_history", "input": {"days": 7}},
+    ]
+
+
+def test_max_tokens_is_raised():
+    from retrace.agent import loop
+
+    assert loop.MAX_TOKENS == 16000
+
+
+def test_truncated_tool_use_is_not_dispatched(tmp_path, baseline):
+    truncated = [
+        {"type": "tool_use", "id": "toolu_1", "name": "get_metric_history", "input": {"days": 7}},
+    ]
+    state, ex, conn = _executor(tmp_path, baseline)
+    model = _RawModel([(truncated, "max_tokens")])
+    try:
+        stats = run_agent(model, ex, state, model="m", sleep=lambda s: None, max_turns=2)
+    finally:
+        conn.close()
+    assert model.requests[0]["max_tokens"] == 16000
+    assert state.evidence == []
+    assert stats.tool_calls == 0
+    reply = model.snapshots[1][-1]
+    assert reply["role"] == "user"
+    assert reply["content"] == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "response was truncated at max_tokens; retry with a shorter reply",
+            "is_error": True,
+        }
+    ]
+
+
+def test_refusal_fails_the_run(tmp_path, baseline):
+    state, ex, conn = _executor(tmp_path, baseline)
+    model = _RawModel([([{"type": "text", "text": "I can't help."}], "refusal")])
+    try:
+        run_agent(model, ex, state, model="m", sleep=lambda s: None)
+    finally:
+        conn.close()
+    assert state.stage is Stage.FAILED
+    assert state.failure_reason == "model refused"
+    assert len(model.requests) == 1
+
+
+def test_overloaded_error_is_retried(tmp_path, baseline):
+    import anthropic
+    import httpx
+    from retrace.agent.loop import RETRYABLE
+
+    overloaded = getattr(anthropic, "OverloadedError", None)
+    if overloaded is None:
+        import pytest
+
+        pytest.skip("installed SDK has no OverloadedError")
+    assert overloaded in RETRYABLE
+
+    class Flaky(ScriptedModel):
+        def create(self, **kwargs):
+            if not getattr(self, "_failed", False):
+                self._failed = True
+                request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+                raise overloaded(
+                    "overloaded", response=httpx.Response(529, request=request), body=None
+                )
+            return super().create(**kwargs)
+
+    state, ex, conn = _executor(tmp_path, baseline)
+    try:
+        run_agent(Flaky(unit_cents_script()), ex, state, model="m", sleep=lambda s: None)
+    finally:
+        conn.close()
+    assert state.stage is Stage.WRITTEN_BACK, state.failure_reason
+
+
+def test_claim_tool_descriptions_state_asset_format():
+    from retrace.agent.prompts import TOOL_SCHEMAS
+
+    by_name = {t["name"]: t for t in TOOL_SCHEMAS}
+    for name in ("confirm_root_cause", "escalate_upstream"):
+        description = by_name[name]["description"]
+        assert "table name like raw.raw_orders or its DataHub URN" in description
+        assert "field: column name" in description
