@@ -57,6 +57,21 @@ def test_claim_gate_requires_asset_in_lineage():
         check_claim_evidence(store, "raw.raw_customers", [lineage.id, profile.id])
 
 
+def test_claim_gate_requires_cited_lineage():
+    state = IncidentState(scenario="t", report="r")
+    store = EvidenceStore(state)
+    store.add(
+        "datahub",
+        "lineage",
+        "upstream of KPI",
+        {"upstreams": [{"urn": URN, "name": "raw.raw_orders"}]},
+    )
+    metadata = store.add("datahub", "metadata", "table metadata", {"owner": "analytics"})
+    profile = store.add("warehouse", "profile", "amount by processor", {"rows": []})
+    with pytest.raises(GateError, match="lineage"):
+        check_claim_evidence(store, "raw.raw_orders", [metadata.id, profile.id])
+
+
 def test_no_incident_gate():
     state = IncidentState(scenario="t", report="r")
     store = EvidenceStore(state)

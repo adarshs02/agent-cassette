@@ -50,7 +50,7 @@ def check_claim_evidence(store: EvidenceStore, asset: str, evidence_ids: list[st
     if not any(i.source == "warehouse" for i in items):
         raise GateError("cite at least one warehouse data evidence item (profile, sql, baseline)")
     name = table_name(asset)
-    lineage = [e for e in store.all() if e.source == "datahub" and e.kind == "lineage"]
+    lineage = [e for e in items if e.source == "datahub" and e.kind == "lineage"]
     if not any(name in json.dumps(e.payload, default=str) for e in lineage):
         raise GateError(
             f"{name} does not appear in any DataHub lineage evidence; "
