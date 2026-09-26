@@ -91,17 +91,24 @@ Phase E closed loop passed acceptance, then shipped as one release. No new publi
   unchanged; no new public Python export, `EventType`, schema, dependency, or version change.
 
 ### Fixed
-- Secret-key redaction no longer redacts token-count fields (`input_tokens`,
+- Secret-key redaction no longer redacts integer token-count fields — keys
+  ending in `*_tokens`/`*TokenCount`/`*_token_count` (`input_tokens`,
   `output_tokens`, `max_tokens`, `cache_read_input_tokens`,
-  `cache_creation_input_tokens`, `tokens_used`, `total_tokens`, …). The bare
-  `token` alternative in `_SECRET_KEY` previously matched inside any key
-  containing the substring `token`, so SDK usage-count integers were replaced
-  with `"[REDACTED]"` on every recording and replayed as strings instead of
-  ints. `_SECRET_KEY` now excludes `token` immediately followed by `s` and
-  then end-of-key or a non-letter, while still redacting `token`,
-  `auth_token`, `id_token`, `x-token`, `authToken`, `sessionToken`,
-  `accessToken`, `access_token`, `refresh_token`, and URL query parameters
-  such as `?token=`.
+  `cache_creation_input_tokens`, `total_tokens`, and Gemini
+  `usage_metadata` fields such as `prompt_token_count`,
+  `candidates_token_count`, `total_token_count`/`promptTokenCount`) — when
+  the value is a plain `int` (not a `bool`, not a string). SDK `usage`
+  (OpenAI/Anthropic) and `usage_metadata` (Gemini) integers were previously
+  replaced with `"[REDACTED]"` on every recording and replayed as strings
+  instead of ints. Any other value under a token-named key — a plural
+  secret container (`{"tokens": {...}}`, `oauth_tokens`, `idTokens`), a
+  non-int value under a count-shaped key (a string, a `bool`), or a
+  singular secret key with no count suffix (`token`, `otp_token`) — is
+  still redacted exactly as before, as are `Authorization`, `api_key`,
+  `access_token`, `refresh_token`, `secret`, `password`, and URL query
+  parameters such as `?token=`/`?auth_token=`. `_SECRET_KEY` itself is
+  unchanged; the exemption is a narrow, value-aware check applied only in
+  the dict-key redaction path.
 
 ### Security
 - Connection-URI credential redaction: the recursive `redact()` path (recorder, hybrid,

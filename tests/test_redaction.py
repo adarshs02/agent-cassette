@@ -47,7 +47,9 @@ def test_redacts_bare_token_field():
 
 
 # --------------------------------------------------------------------------- #
-# Regression: "token" must not match inside usage-count keys (e.g. "tokens")
+# Regression: an integer token/usage count under a count-shaped key
+# (``*tokens``/``*token[_]count``) is exempt from redaction; a plural secret
+# container, a non-int value, or a key without the count suffix is still redacted.
 # --------------------------------------------------------------------------- #
 
 
@@ -59,12 +61,17 @@ def test_redacts_bare_token_field():
         "max_tokens",
         "cache_read_input_tokens",
         "cache_creation_input_tokens",
-        "tokens_used",
         "total_tokens",
+        "prompt_token_count",
+        "candidates_token_count",
+        "total_token_count",
+        "promptTokenCount",
+        "inputTokens",
+        "INPUT_TOKENS",
     ],
 )
-def test_usage_count_keys_are_not_redacted(key):
-    assert redact({key: 100}) == {key: 100}
+def test_integer_token_count_keys_are_not_redacted(key):
+    assert redact({key: 42}) == {key: 42}
 
 
 def test_usage_dict_is_fully_preserved():
@@ -73,6 +80,33 @@ def test_usage_dict_is_fully_preserved():
         "max_tokens": 4096,
     }
     assert redact(value) == value
+
+
+def test_gemini_usage_metadata_is_fully_preserved():
+    value = {
+        "usage_metadata": {
+            "prompt_token_count": 12,
+            "candidates_token_count": 34,
+            "total_token_count": 46,
+        }
+    }
+    assert redact(value) == value
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("tokens", {"access": "A"}),  # plural secret container: whole value redacted
+        ("oauth_tokens", ["ghp_x"]),  # plural key, non-int value: still redacted
+        ("idTokens", "x"),  # plural key, string value: still redacted
+        ("input_tokens", "100"),  # count-shaped key but a string, not an int
+        ("max_tokens", True),  # count-shaped key but a bool, not a plain int
+        ("otp_token", 123456),  # int value, but key does not end in the count suffix
+        ("token", 5),  # int value, bare secret key with no count suffix
+    ],
+)
+def test_non_exempt_secret_keys_are_still_redacted(key, value):
+    assert redact({key: value}) == {key: REDACTED}
 
 
 @pytest.mark.parametrize(
@@ -92,6 +126,17 @@ def test_usage_dict_is_fully_preserved():
 )
 def test_secret_bearing_token_keys_are_still_redacted(key):
     assert redact({key: "credential"}) == {key: REDACTED}
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("https://h/p?token=x", "https://h/p?token=[REDACTED]"),
+        ("https://h/p?auth_token=x", "https://h/p?auth_token=[REDACTED]"),
+    ],
+)
+def test_url_query_param_token_redaction_is_unchanged(raw, expected):
+    assert redact(raw) == expected
 
 
 def test_recording_preserves_usage_token_counts(tmp_path):
