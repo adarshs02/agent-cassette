@@ -10,7 +10,8 @@ from urllib.parse import unquote
 REDACTED = "[REDACTED]"
 _MAX_DEPTH = 64
 _SECRET_KEY = re.compile(
-    r"(?:authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password)",
+    r"(?:authorization|api[-_]?key|access[-_]?token|refresh[-_]?token"
+    r"|token(?!s(?:$|[^a-z]))|secret|password)",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")

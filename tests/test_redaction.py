@@ -46,6 +46,65 @@ def test_redacts_bare_token_field():
     assert redact({"token": "credential"}) == {"token": REDACTED}
 
 
+# --------------------------------------------------------------------------- #
+# Regression: "token" must not match inside usage-count keys (e.g. "tokens")
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "input_tokens",
+        "output_tokens",
+        "max_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "tokens_used",
+        "total_tokens",
+    ],
+)
+def test_usage_count_keys_are_not_redacted(key):
+    assert redact({key: 100}) == {key: 100}
+
+
+def test_usage_dict_is_fully_preserved():
+    value = {
+        "usage": {"input_tokens": 100, "output_tokens": 5, "cache_read_input_tokens": 0},
+        "max_tokens": 4096,
+    }
+    assert redact(value) == value
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "token",
+        "auth_token",
+        "id_token",
+        "x-token",
+        "authToken",
+        "sessionToken",
+        "accessToken",
+        "refresh_token",
+        "Token",
+        "API_TOKEN",
+    ],
+)
+def test_secret_bearing_token_keys_are_still_redacted(key):
+    assert redact({key: "credential"}) == {key: REDACTED}
+
+
+def test_recording_preserves_usage_token_counts(tmp_path):
+    path = tmp_path / "usage.jsonl"
+    with Cassette.record(path) as cassette:
+        cassette.add(EventType.TOOL_CALL, "request", output={"usage": {"input_tokens": 7}})
+
+    from agent_cassette.storage import load_events
+
+    events = load_events(path)
+    assert events[0].output == {"usage": {"input_tokens": 7}}
+
+
 @pytest.mark.parametrize("container_type", [dict, list, tuple])
 def test_redaction_rejects_cycles_without_exposing_values(container_type):
     secret = "never-print-this-secret"

@@ -90,6 +90,19 @@ Phase E closed loop passed acceptance, then shipped as one release. No new publi
   `init`, positional `record`/`replay`, `fork`, the pytest fixture, and the public Python API are
   unchanged; no new public Python export, `EventType`, schema, dependency, or version change.
 
+### Fixed
+- Secret-key redaction no longer redacts token-count fields (`input_tokens`,
+  `output_tokens`, `max_tokens`, `cache_read_input_tokens`,
+  `cache_creation_input_tokens`, `tokens_used`, `total_tokens`, …). The bare
+  `token` alternative in `_SECRET_KEY` previously matched inside any key
+  containing the substring `token`, so SDK usage-count integers were replaced
+  with `"[REDACTED]"` on every recording and replayed as strings instead of
+  ints. `_SECRET_KEY` now excludes `token` immediately followed by `s` and
+  then end-of-key or a non-letter, while still redacting `token`,
+  `auth_token`, `id_token`, `x-token`, `authToken`, `sessionToken`,
+  `accessToken`, `access_token`, `refresh_token`, and URL query parameters
+  such as `?token=`.
+
 ### Security
 - Connection-URI credential redaction: the recursive `redact()` path (recorder, hybrid,
   replay input normalization, assertions, and viewer) now scrubs passwords embedded in
