@@ -105,3 +105,19 @@ def test_injections_require_existing_source(tmp_path):
         ),
     ):
         pass
+
+
+def test_injections_require_existing_source_before_creating_dirs(tmp_path):
+    cassette_path = tmp_path / "new_dir" / "x.jsonl"
+    with (
+        pytest.raises(FileNotFoundError),
+        open_clients(
+            "record",
+            settings=Settings(),
+            cassette_path=cassette_path,
+            injections=(InjectionRule(Raise(TimeoutError("x")), event_type=EventType.TOOL_CALL),),
+            source=tmp_path / "missing.jsonl",
+        ),
+    ):
+        pass
+    assert not (tmp_path / "new_dir").exists()

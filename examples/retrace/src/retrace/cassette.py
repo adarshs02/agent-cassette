@@ -61,10 +61,10 @@ def open_clients(
                 datahub.close()
         return
 
+    if injections and (source is None or not source.exists()):
+        raise FileNotFoundError(f"fault injection needs an existing source cassette: {source}")
     cassette_path.parent.mkdir(parents=True, exist_ok=True)
     if injections:
-        if source is None or not source.exists():
-            raise FileNotFoundError(f"fault injection needs an existing source cassette: {source}")
         session = Cassette.fork(source, cassette_path, at=0, injections=injections)
     else:
         session = Cassette.record(cassette_path)
