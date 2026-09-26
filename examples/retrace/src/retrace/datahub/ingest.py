@@ -1,3 +1,5 @@
+# Adapted from Project Blackbox (https://github.com/alejandro-publius/blackbox-datahub),
+# Apache-2.0. Modified for Retrace.
 """Push the pipeline's schemas, docs, owners, tags, and lineage into DataHub."""
 
 from __future__ import annotations
@@ -142,6 +144,7 @@ def build_proposals(warehouse: Path) -> list[Any]:
 
 
 def ingest_workspace(ws: Workspace, settings: Settings) -> int:
+    _models()
     from datahub.emitter.rest_emitter import DatahubRestEmitter
 
     emitter = DatahubRestEmitter(

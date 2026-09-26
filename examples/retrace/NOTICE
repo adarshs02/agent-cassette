@@ -9,3 +9,4 @@ Adapted files carry a header comment and were modified for Retrace:
 - src/retrace/pipeline/transforms/*.sql
 - src/retrace/pipeline/checks.py (invariant patterns)
 - src/retrace/datahub/catalog.py (dataset and field documentation)
+- src/retrace/datahub/ingest.py (metadata emission approach)
