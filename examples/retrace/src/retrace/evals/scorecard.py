@@ -27,6 +27,12 @@ def _next_run(results_dir: Path) -> int:
     return max(runs, default=0) + 1
 
 
+def _table_cell(text: str, limit: int = 120) -> str:
+    """One markdown-table-safe line: first line only, `|` escaped, length-capped."""
+    first_line = text.splitlines()[0] if text else ""
+    return first_line.replace("|", "\\|")[:limit]
+
+
 def write_results(results: list[ScenarioResult], mode: str, results_dir: Path) -> Path:
     results_dir.mkdir(parents=True, exist_ok=True)
     run = _next_run(results_dir)
@@ -53,11 +59,16 @@ def write_results(results: list[ScenarioResult], mode: str, results_dir: Path) -
     for r in results:
         failed = ", ".join(g.name for g in r.grades if not g.passed) or (r.error or "")
         lines.append(
-            f"| {r.scenario} | {r.status} | {r.final_stage or ''} | {failed} | "
+            f"| {r.scenario} | {r.status} | {r.final_stage or ''} | {_table_cell(failed)} | "
             f"{r.stats.get('turns', '')} | {r.stats.get('tool_calls', '')} | "
             f"{r.stats.get('input_tokens', '')} | {r.stats.get('output_tokens', '')} | "
             f"{r.wall_s} |"
         )
+    errored = [r for r in results if r.status == "error" and r.error]
+    if errored:
+        lines += ["", "## Errors", ""]
+        for r in errored:
+            lines += [f"### {r.scenario}", "", "````", r.error, "````", ""]
     path = results_dir / "scorecard.md"
     path.write_text("\n".join(lines) + "\n")
     return path

@@ -116,6 +116,20 @@ def test_scorecard_counts_a_failed_control_as_false_positive(tmp_path):
     assert "none" in not_graded_line
 
 
+def test_scorecard_table_row_stays_single_line_for_multiline_error(tmp_path):
+    results = [
+        ScenarioResult("unit_cents", "error", error="RuntimeError: a|b\nTraceback...\n  File x"),
+    ]
+    text = write_results(results, "replay", tmp_path / "results").read_text()
+    table_lines = [line for line in text.splitlines() if line.startswith("|")]
+    header_pipes = table_lines[0].replace("\\|", "").count("|")
+    row_lines = [line for line in table_lines if "unit_cents" in line]
+    assert len(row_lines) == 1
+    assert "RuntimeError: a\\|b" in row_lines[0]
+    for line in table_lines:
+        assert line.replace("\\|", "").count("|") == header_pipes
+
+
 def test_errored_scenario_keeps_traceback(tmp_path, monkeypatch):
     kw = {"settings": Settings(), "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
 
