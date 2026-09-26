@@ -19,8 +19,7 @@ no API key and no DataHub.
   invariant run. No LLM judge.
 - **Cassettes.** Live runs record Claude and DataHub MCP calls. Replay runs the same agent
   with the warehouse, repair, and check tools executing for real.
-
-Building Retrace surfaced and fixed an Agent Cassette redaction bug: integer token-count fields (`input_tokens`, `max_tokens`, Gemini `*_token_count`) were being scrubbed as secrets.
+- **Found a library bug.** Building Retrace surfaced and fixed an Agent Cassette redaction bug: integer token-count fields (`input_tokens`, `max_tokens`, Gemini `*_token_count`) were being scrubbed as secrets.
 
 ## Scenarios
 
@@ -42,8 +41,7 @@ Building Retrace surfaced and fixed an Agent Cassette redaction bug: integer tok
 
 ```bash
 uv sync
-uv run retrace eval --replay            # offline, from committed cassettes
-uv run agent-cassette view evals/cassettes/unit_cents.jsonl --output unit_cents.html
+uv run retrace eval --replay            # offline, from committed cassettes; agent scenarios report "skipped" until cassettes are recorded
 ```
 
 Live (records cassettes; needs Docker, DataHub, and an Anthropic key):
@@ -53,11 +51,12 @@ uv sync --extra datahub
 uvx --from acryl-datahub datahub docker quickstart
 export ANTHROPIC_API_KEY=...  DATAHUB_GMS_URL=http://localhost:8080
 uv run retrace eval --live --trials 3
+uv run agent-cassette view evals/cassettes/unit_cents.jsonl --output unit_cents.html
 ```
 
 ## Results
 
-See [`evals/results/scorecard.md`](evals/results/scorecard.md).
+Pending the first live recording (`uv run retrace eval --live`). Once recorded, the scorecard is written to `evals/results/scorecard.md` and CI replays every scenario from `evals/cassettes/`.
 
 ## Credits
 
