@@ -17,6 +17,23 @@ _DATAHUB_ERRORS = (
 )
 
 
+def _document_urn(doc: Any) -> str | None:
+    """Best-effort: pull the created document's URN out of a save_document result."""
+    if isinstance(doc, str):
+        return doc if doc.startswith("urn:li:") else None
+    if not isinstance(doc, dict):
+        return None
+    for key in ("urn", "documentUrn", "document_urn"):
+        value = doc.get(key)
+        if isinstance(value, str) and value.startswith("urn:li:"):
+            return value
+    for key in ("document", "data", "result"):
+        found = _document_urn(doc.get(key))
+        if found:
+            return found
+    return None
+
+
 class DataHubTools:
     def __init__(self, conn: DataHubConnection) -> None:
         self._conn = conn
@@ -54,6 +71,12 @@ class DataHubTools:
         )
         if isinstance(doc, dict) and "error" in doc:
             return doc
-        return self._call(
+        tagged = self._call(
             "add_tags", {"tag_urns": ["urn:li:tag:retrace-incident"], "entity_urns": [asset_urn]}
         )
+        urn = _document_urn(doc)
+        if urn is None:
+            return tagged
+        if isinstance(tagged, dict):
+            return {**tagged, "document_urn": urn}
+        return {"result": tagged, "document_urn": urn}

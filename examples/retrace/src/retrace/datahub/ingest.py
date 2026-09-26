@@ -111,18 +111,19 @@ def build_proposals(warehouse: Path) -> list[Any]:
                         ),
                     )
                 )
-            if table in TAGS:
-                proposals.append(
-                    MCPW(
-                        entityUrn=urn,
-                        aspect=models.GlobalTagsClass(
-                            tags=[
-                                models.TagAssociationClass(tag=f"urn:li:tag:{tag}")
-                                for tag in TAGS[table]
-                            ]
-                        ),
-                    )
+            # Always emit GlobalTags (empty when untagged) so tags a previous run
+            # added, such as retrace-incident, are cleared.
+            proposals.append(
+                MCPW(
+                    entityUrn=urn,
+                    aspect=models.GlobalTagsClass(
+                        tags=[
+                            models.TagAssociationClass(tag=f"urn:li:tag:{tag}")
+                            for tag in TAGS.get(table, [])
+                        ]
+                    ),
                 )
+            )
             if table in upstreams:
                 proposals.append(
                     MCPW(
@@ -143,13 +144,28 @@ def build_proposals(warehouse: Path) -> list[Any]:
     return proposals
 
 
-def ingest_workspace(ws: Workspace, settings: Settings) -> int:
+def _emitter(settings: Settings) -> Any:
     _models()
     from datahub.emitter.rest_emitter import DatahubRestEmitter
 
-    emitter = DatahubRestEmitter(
-        gms_server=settings.datahub_gms_url, token=settings.datahub_gms_token
-    )
+    return DatahubRestEmitter(gms_server=settings.datahub_gms_url, token=settings.datahub_gms_token)
+
+
+def soft_delete(urns: list[str], settings: Settings) -> int:
+    """Soft-delete entities (e.g. incident documents a live run wrote)."""
+    if not urns:
+        return 0
+    models = _models()
+    from datahub.emitter.mcp import MetadataChangeProposalWrapper as MCPW
+
+    emitter = _emitter(settings)
+    for urn in urns:
+        emitter.emit_mcp(MCPW(entityUrn=urn, aspect=models.StatusClass(removed=True)))
+    return len(urns)
+
+
+def ingest_workspace(ws: Workspace, settings: Settings) -> int:
+    emitter = _emitter(settings)
     proposals = build_proposals(ws.warehouse)
     for proposal in proposals:
         emitter.emit_mcp(proposal)

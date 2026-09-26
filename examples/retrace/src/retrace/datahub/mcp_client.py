@@ -7,7 +7,7 @@ import concurrent.futures
 import json
 import os
 import threading
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from typing import Any
 
 from agent_cassette import wrap_mcp
@@ -20,6 +20,64 @@ class DataHubToolError(RuntimeError):
 
 class DataHubUnavailable(RuntimeError):
     """The DataHub MCP server could not be started."""
+
+
+DEFAULT_TIMEOUT = 45.0
+# The outer (thread-side) wait must outlast the inner, recorded timeout so the inner
+# TimeoutError is what surfaces and gets recorded as the call's event.
+OUTER_TIMEOUT_MARGIN = 15.0
+
+# Tools and parameters Retrace sends; the live server must accept all of them.
+REQUIRED_TOOLS: dict[str, tuple[str, ...]] = {
+    "search": ("query", "num_results"),
+    "get_entities": ("urns",),
+    "get_lineage": ("urn", "upstream", "max_hops"),
+    "save_document": ("document_type", "title", "content", "topics", "related_assets"),
+    "add_tags": ("tag_urns", "entity_urns"),
+}
+
+
+def _field(obj: Any, *names: str) -> Any:
+    for name in names:
+        value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def check_tool_contract(tools: Iterable[Any]) -> list[str]:
+    """Return what the server's tool listing lacks versus REQUIRED_TOOLS (empty if ok)."""
+    listed: dict[str, set[str]] = {}
+    for tool in tools:
+        name = _field(tool, "name")
+        schema = _field(tool, "input_schema", "inputSchema") or {}
+        properties = _field(schema, "properties") or {}
+        if isinstance(name, str):
+            listed[name] = set(properties) if isinstance(properties, dict) else set()
+    problems: list[str] = []
+    for name, params in REQUIRED_TOOLS.items():
+        if name not in listed:
+            problems.append(f"missing tool {name}")
+            continue
+        problems += [f"{name}: missing parameter {p}" for p in params if p not in listed[name]]
+    return problems
+
+
+async def _list_all_tools(session: Any) -> list[Any]:
+    tools: list[Any] = []
+    cursor = None
+    for _ in range(100):  # bounded pagination
+        if cursor is None:
+            listing = await session.list_tools()
+        else:
+            from mcp.types import PaginatedRequestParams
+
+            listing = await session.list_tools(params=PaginatedRequestParams(cursor=cursor))
+        tools.extend(_field(listing, "tools") or [])
+        cursor = _field(listing, "next_cursor", "nextCursor")
+        if not cursor:
+            break
+    return tools
 
 
 class LoopThread:
@@ -79,20 +137,33 @@ class _JSONResultSession:
     path, with no SDK trust decision required at all.
     """
 
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, timeout: float = DEFAULT_TIMEOUT) -> None:
         self._session = session
+        self._timeout = timeout
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._session, name)
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
-        result = await self._session.call_tool(name, arguments)
+        # The timeout lives inside wrap_mcp's live_call, so a timeout is recorded as this
+        # call's error event and replays as the same TimeoutError.
+        try:
+            result = await asyncio.wait_for(self._session.call_tool(name, arguments), self._timeout)
+        except asyncio.TimeoutError:  # a distinct class from TimeoutError on Python 3.10
+            raise TimeoutError(
+                f"DataHub MCP call {name} timed out after {self._timeout:g}s"
+            ) from None
         dump = getattr(result, "model_dump", None)
         return dump(mode="json") if callable(dump) else result
 
 
 def _server_env(settings: Settings) -> dict[str, str]:
-    env = dict(os.environ)
+    """An allowlisted environment for the MCP server: never pass model credentials."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in ("PATH", "HOME") or key.startswith(("UV_", "XDG_"))
+    }
     env["DATAHUB_GMS_URL"] = settings.datahub_gms_url
     if settings.datahub_gms_token:
         env["DATAHUB_GMS_TOKEN"] = settings.datahub_gms_token
@@ -101,26 +172,53 @@ def _server_env(settings: Settings) -> dict[str, str]:
 
 
 class DataHubConnection:
-    def __init__(self, runner: LoopThread, session: Any, shutdown: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        runner: LoopThread,
+        session: Any,
+        shutdown: Callable[[], None],
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+        inner_timeout: bool = False,
+    ) -> None:
         self._runner = runner
         self._session = session
         self._shutdown = shutdown
+        self._timeout = timeout
+        self._inner_timeout = inner_timeout
 
     @classmethod
-    def from_session(cls, session: Any, cassette: Any | None = None) -> DataHubConnection:
-        runner = LoopThread()
+    def _wrap(
+        cls,
+        runner: LoopThread,
+        session: Any,
+        shutdown: Callable[[], None],
+        cassette: Any | None,
+        timeout: float,
+    ) -> DataHubConnection:
         if cassette is None:
-            return cls(runner, session, runner.stop)
-        proxy = wrap_mcp(_JSONResultSession(session), cassette, asynchronous=True)
-        return cls(runner, proxy, runner.stop)
+            return cls(runner, session, shutdown, timeout=timeout)
+        proxy = wrap_mcp(_JSONResultSession(session, timeout), cassette, asynchronous=True)
+        return cls(runner, proxy, shutdown, timeout=timeout, inner_timeout=True)
+
+    @classmethod
+    def from_session(
+        cls, session: Any, cassette: Any | None = None, *, timeout: float = DEFAULT_TIMEOUT
+    ) -> DataHubConnection:
+        runner = LoopThread()
+        return cls._wrap(runner, session, runner.stop, cassette, timeout)
 
     @classmethod
     def replay(cls, cassette: Any) -> DataHubConnection:
         runner = LoopThread()
-        return cls(runner, wrap_mcp(None, cassette, asynchronous=True), runner.stop)
+        return cls(
+            runner, wrap_mcp(None, cassette, asynchronous=True), runner.stop, inner_timeout=True
+        )
 
     @classmethod
-    def live(cls, settings: Settings, cassette: Any | None = None) -> DataHubConnection:
+    def live(
+        cls, settings: Settings, cassette: Any | None = None, *, timeout: float = DEFAULT_TIMEOUT
+    ) -> DataHubConnection:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
@@ -137,6 +235,12 @@ class DataHubConnection:
                 async with stdio_client(params) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
+                        problems = check_tool_contract(await _list_all_tools(session))
+                        if problems:
+                            raise DataHubUnavailable(
+                                f"{settings.mcp_server_spec} does not match Retrace's tool "
+                                f"contract: {'; '.join(problems)}"
+                            )
                         ready.set_result(session)
                         await holder["stop"].wait()
             except BaseException as error:
@@ -161,13 +265,11 @@ class DataHubConnection:
                 pass
             runner.stop()
 
-        if cassette is None:
-            return cls(runner, session, shutdown)
-        proxy = wrap_mcp(_JSONResultSession(session), cassette, asynchronous=True)
-        return cls(runner, proxy, shutdown)
+        return cls._wrap(runner, session, shutdown, cassette, timeout)
 
-    def call(self, name: str, args: dict[str, Any], timeout: float = 45) -> Any:
-        return parse_result(self._runner.run(self._session.call_tool(name, args), timeout))
+    def call(self, name: str, args: dict[str, Any]) -> Any:
+        wait = self._timeout + OUTER_TIMEOUT_MARGIN if self._inner_timeout else self._timeout
+        return parse_result(self._runner.run(self._session.call_tool(name, args), wait))
 
     def close(self) -> None:
         self._shutdown()

@@ -44,7 +44,9 @@ uv sync
 uv run retrace eval --replay            # offline, from committed cassettes; agent scenarios report "skipped" until cassettes are recorded
 ```
 
-Live (records cassettes; needs Docker, DataHub, and an Anthropic key):
+Live (records cassettes; needs Docker, DataHub, and an Anthropic key). Pin the DataHub MCP
+server so recordings stay reproducible, e.g. `export RETRACE_MCP_SERVER=mcp-server-datahub==<version>`;
+Retrace checks the server's tool list at startup and refuses to run against a mismatched one:
 
 ```bash
 uv sync --extra datahub
