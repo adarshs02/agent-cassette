@@ -8,16 +8,10 @@ from pathlib import Path
 import sqlglot
 from sqlglot import exp
 
-from retrace.pipeline.build import TRANSFORM_ORDER
+from retrace.pipeline.build import OUTPUT_TABLES, TRANSFORM_ORDER
 from retrace.pipeline.workspace import TRANSFORMS_DIR
 
-OUTPUT_TABLES: dict[str, str] = {
-    "stg_orders": "staging.stg_orders",
-    "stg_customers": "staging.stg_customers",
-    "stg_fx_rates": "staging.stg_fx_rates",
-    "fct_revenue": "marts.fct_revenue",
-    "exec_metric": "marts.exec_metric",
-}
+# OUTPUT_TABLES lives in build.py (build validates transforms against it); re-exported here.
 _URN = re.compile(r"urn:li:dataset:\(urn:li:dataPlatform:[^,]+,([^,]+),[^)]+\)")
 
 

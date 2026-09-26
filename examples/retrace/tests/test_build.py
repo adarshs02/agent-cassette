@@ -21,7 +21,9 @@ def test_healthy_build(tmp_path):
 
 def test_build_error_names_transform(tmp_path):
     ws = prepare(tmp_path / "ws", fault=None)
-    (ws.transforms / "fct_revenue.sql").write_text("SELECT * FROM nope;")
+    (ws.transforms / "fct_revenue.sql").write_text(
+        "CREATE OR REPLACE TABLE marts.fct_revenue AS SELECT * FROM nope;"
+    )
     with pytest.raises(BuildError, match="fct_revenue.sql failed"):
         build(ws.sources, ws.transforms, ws.warehouse)
 
@@ -35,3 +37,10 @@ def test_workspace_create_copies_transforms(tmp_path):
         "stg_fx_rates.sql",
         "stg_orders.sql",
     ]
+
+
+def test_build_rejects_non_create_transform(tmp_path):
+    ws = prepare(tmp_path / "ws", fault=None)
+    (ws.transforms / "fct_revenue.sql").write_text("SELECT * FROM nope;")
+    with pytest.raises(BuildError, match=r"must be a single CREATE \[OR REPLACE\] TABLE"):
+        build(ws.sources, ws.transforms, ws.warehouse)

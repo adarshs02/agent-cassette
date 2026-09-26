@@ -26,3 +26,22 @@ def test_broken_warehouse_reports_failures_not_exceptions(tmp_path, baseline):
     assert len(results) == 19
     assert all(not r.passed for r in results)
     assert all("check errored" in r.detail for r in results)
+
+
+def test_check_details_round_floats(tmp_path, baseline):
+    import re
+
+    import pytest
+    from retrace.faults import fault_names
+    from retrace.pipeline.workspace import prepare
+
+    long_float = re.compile(r"\d\.\d{7,}")
+    offenders = []
+    for fault in [None, *fault_names()]:
+        ws = prepare(tmp_path / (fault or "healthy"), fault=fault)
+        for result in run_checks(ws.warehouse, baseline):
+            if long_float.search(result.detail):
+                offenders.append((fault, result.name, result.detail))
+    if not fault_names():
+        pytest.fail("no faults registered")
+    assert offenders == []

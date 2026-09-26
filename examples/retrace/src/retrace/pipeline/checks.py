@@ -113,17 +113,27 @@ def _amount_positive(con, baseline):
     )
 
 
+def _fmt(value: Any) -> str:
+    """Render a value for a check detail with floats rounded to 6 decimals."""
+    if isinstance(value, float):
+        return repr(round(value, 6))
+    if isinstance(value, tuple):
+        inner = ", ".join(_fmt(v) for v in value)
+        return f"({inner},)" if len(value) == 1 else f"({inner})"
+    return str(value)
+
+
 @check("stg_max_amount_sane")
 def _max_amount(con, baseline):
     top = _scalar(con, "SELECT MAX(amount) FROM staging.stg_orders")
-    return top is not None and top < MAX_SANE_AMOUNT, f"max amount {top}"
+    return top is not None and top < MAX_SANE_AMOUNT, f"max amount {_fmt(top)}"
 
 
 @check("fct_order_count_matches_stg")
 def _order_count_matches(con, baseline):
     fct = _scalar(con, "SELECT SUM(order_count) FROM marts.fct_revenue")
     stg = _scalar(con, "SELECT COUNT(*) FROM staging.stg_orders")
-    return fct == stg, f"fct={fct} stg={stg}"
+    return fct == stg, f"fct={_fmt(fct)} stg={_fmt(stg)}"
 
 
 @check("fct_one_row_per_day")
@@ -231,14 +241,14 @@ def _metric_matches(con, baseline):
         "JOIN marts.fct_revenue AS f ON f.day = m.kpi_day"
     ).fetchone()
     ok = row is not None and None not in row and abs(row[0] - row[1]) < 1e-6
-    return ok, f"metric/fct = {row}"
+    return ok, f"metric/fct = {_fmt(row)}"
 
 
 @check("kpi_anomaly_ratio_sane")
 def _kpi_ratio(con, baseline):
     ratio = _scalar(con, "SELECT anomaly_ratio FROM marts.exec_metric")
     low, high = KPI_RATIO_RANGE
-    return ratio is not None and low <= ratio <= high, f"anomaly_ratio={ratio}"
+    return ratio is not None and low <= ratio <= high, f"anomaly_ratio={_fmt(ratio)}"
 
 
 @check("raw_no_null_amount")

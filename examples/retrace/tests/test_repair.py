@@ -47,7 +47,10 @@ def test_failing_fix_reports_checks(tmp_path, baseline):
 def test_build_error_is_reported(tmp_path, baseline):
     ws = prepare(tmp_path / "ws", fault="unit_cents")
     outcome = Repairer(ws, baseline, tmp_path / "s").propose(
-        "stg_orders.sql", "SELECT FROM WHERE", "raw.raw_orders", accepted={}
+        "stg_orders.sql",
+        "CREATE OR REPLACE TABLE staging.stg_orders AS SELECT * FROM raw.nope",
+        "raw.raw_orders",
+        accepted={},
     )
     assert not outcome.passed and "stg_orders.sql failed" in outcome.error
     assert str(tmp_path) not in outcome.error
@@ -99,3 +102,73 @@ def test_valid_accepted_target_is_allowed_and_covered_in_diff(tmp_path, baseline
     assert second.passed, second.failed_checks
     assert "a/stg_orders.sql" in second.diff
     assert repairer.attempts == 2
+
+
+def _raw_amounts(ws):
+    return sorted(p.read_bytes() for p in ws.sources.glob("raw_orders_*.csv"))
+
+
+def test_multi_statement_exfil_patch_is_rejected(tmp_path, baseline):
+    import duckdb
+
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    before = _raw_amounts(ws)
+    exfil = tmp_path / "exfil.csv"
+    sql = f"COPY (SELECT 'x') TO '{exfil}'; UPDATE raw.raw_orders SET amount='1'"
+    outcome = Repairer(ws, baseline, tmp_path / "scratch").propose(
+        "stg_orders.sql", sql, "raw.raw_orders", accepted={}
+    )
+    assert not outcome.passed
+    assert outcome.error == (
+        "stg_orders.sql must be a single CREATE [OR REPLACE] TABLE staging.stg_orders"
+    )
+    assert not exfil.exists()
+    assert _raw_amounts(ws) == before
+    con = duckdb.connect(str(tmp_path / "scratch" / "attempt_1" / "warehouse.duckdb"), True)
+    try:
+        ones = con.execute("SELECT COUNT(*) FROM raw.raw_orders WHERE amount = '1'").fetchone()
+        total = con.execute("SELECT COUNT(*) FROM raw.raw_orders").fetchone()
+    finally:
+        con.close()
+    assert total[0] > 0 and ones[0] < total[0]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "INSTALL httpfs",
+        "ATTACH 'x.duckdb' AS other",
+        "CREATE OR REPLACE TABLE staging.stg_orders AS SELECT 1; INSTALL httpfs",
+        "CREATE OR REPLACE TABLE raw.raw_orders AS SELECT 1 AS amount",
+        "CREATE OR REPLACE VIEW staging.stg_orders AS SELECT 1",
+        "UPDATE raw.raw_orders SET amount = '1'",
+    ],
+)
+def test_non_create_table_patches_are_rejected(tmp_path, baseline, sql):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    outcome = Repairer(ws, baseline, tmp_path / "scratch").propose(
+        "stg_orders.sql", sql, "raw.raw_orders", accepted={}
+    )
+    assert not outcome.passed
+    assert "must be a single CREATE [OR REPLACE] TABLE staging.stg_orders" in outcome.error
+
+
+def test_build_sandbox_blocks_external_file_reads(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    secret = tmp_path / "secret.csv"
+    secret.write_text("a\n1\n")
+    sql = f"CREATE OR REPLACE TABLE staging.stg_orders AS SELECT * FROM read_csv('{secret}')"
+    outcome = Repairer(ws, baseline, tmp_path / "scratch").propose(
+        "stg_orders.sql", sql, "raw.raw_orders", accepted={}
+    )
+    assert not outcome.passed
+    assert outcome.error.startswith("stg_orders.sql failed")
+
+
+def test_unparseable_patch_is_rejected_with_detail(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    outcome = Repairer(ws, baseline, tmp_path / "s").propose(
+        "stg_orders.sql", "SELECT FROM WHERE (", "raw.raw_orders", accepted={}
+    )
+    assert not outcome.passed
+    assert outcome.error.startswith("stg_orders.sql must be a single CREATE")
