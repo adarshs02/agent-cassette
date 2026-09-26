@@ -1,0 +1,44 @@
+name: Retrace
+
+# Keyless, DataHub-less CI: the full Retrace eval suite replays from committed cassettes.
+# Also runs on library changes, so an Agent Cassette change that breaks Retrace fails CI.
+on:
+  pull_request:
+    paths:
+      - "examples/retrace/**"
+      - "src/**"
+      - ".github/workflows/retrace.yml"
+  push:
+    branches: [main]
+    paths:
+      - "examples/retrace/**"
+      - "src/**"
+      - ".github/workflows/retrace.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: examples/retrace
+    env:
+      ANTHROPIC_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.10.2"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked environment
+        run: uv sync --frozen --python 3.12
+      - name: Unit and replay tests
+        run: uv run --frozen pytest
+      - name: Replay eval suite
+        run: uv run --frozen retrace eval --replay
