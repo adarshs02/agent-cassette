@@ -13,6 +13,15 @@ _SECRET_KEY = re.compile(
     r"(?:authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password)",
     re.IGNORECASE,
 )
+# A narrow, value-aware exemption for the dict-key redaction path only (see
+# ``_redact_dict_entry``): a secret-looking key ending in "tokens" or "token[_]count"
+# (SDK usage counters such as ``input_tokens``, ``prompt_token_count``,
+# ``promptTokenCount``) keeps its value when that value is a plain ``int`` (not a
+# ``bool``, not a string). Everything else under a secret-looking key -- including a
+# non-int value under a matching key, or a key that merely contains "token" without this
+# suffix (``token``, ``otp_token``) -- is still redacted exactly as before. URL
+# query-parameter redaction is unaffected and keeps its original strict behavior.
+_TOKEN_COUNT_KEY = re.compile(r"(?:tokens|token_?count)$", re.IGNORECASE)
 _BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
 
 # Hierarchical URIs are located by a linear ``str.find("://")`` scan (no regex, so no
@@ -47,9 +56,7 @@ def _redact_at(value: Any, *, depth: int, active: set[int]) -> Any:
         value_id = _enter_container(value, active)
         try:
             return {
-                key: REDACTED
-                if isinstance(key, str) and _SECRET_KEY.search(key)
-                else _redact_at(item, depth=depth + 1, active=active)
+                key: _redact_dict_entry(key, item, depth=depth + 1, active=active)
                 for key, item in value.items()
             }
         finally:
@@ -69,6 +76,29 @@ def _redact_at(value: Any, *, depth: int, active: set[int]) -> Any:
     if isinstance(value, str):
         return _scrub_uris(_BEARER.sub(f"Bearer {REDACTED}", value))
     return value
+
+
+def is_token_count_field(key: object, value: object) -> bool:
+    """Return True for a plain ``int`` under a count-shaped secret-looking key.
+
+    This is the single predicate for the token-count exemption: redaction keeps such
+    values, and replay matching (:func:`agent_cassette.matching.normalize_input`) folds
+    them to the redaction marker so v1.0 cassettes (which stored the marker) still match.
+    """
+    return (
+        isinstance(key, str)
+        and _SECRET_KEY.search(key) is not None
+        and _TOKEN_COUNT_KEY.search(key) is not None
+        and type(value) is int
+    )
+
+
+def _redact_dict_entry(key: object, item: Any, *, depth: int, active: set[int]) -> Any:
+    if isinstance(key, str) and _SECRET_KEY.search(key):
+        if is_token_count_field(key, item):
+            return item  # an integer usage/token count under a count-shaped key, not a secret
+        return REDACTED
+    return _redact_at(item, depth=depth, active=active)
 
 
 def _scrub_uris(text: str, depth: int = 0) -> str:

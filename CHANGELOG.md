@@ -90,6 +90,34 @@ Phase E closed loop passed acceptance, then shipped as one release. No new publi
   `init`, positional `record`/`replay`, `fork`, the pytest fixture, and the public Python API are
   unchanged; no new public Python export, `EventType`, schema, dependency, or version change.
 
+### Fixed
+- Secret-key redaction no longer redacts integer token-count fields — keys
+  ending in `*_tokens`/`*TokenCount`/`*_token_count` (`input_tokens`,
+  `output_tokens`, `max_tokens`, `cache_read_input_tokens`,
+  `cache_creation_input_tokens`, `total_tokens`, and Gemini
+  `usage_metadata` fields such as `prompt_token_count`,
+  `candidates_token_count`, `total_token_count`/`promptTokenCount`) — when
+  the value is a plain `int` (not a `bool`, not a string). SDK `usage`
+  (OpenAI/Anthropic) and `usage_metadata` (Gemini) integers were previously
+  replaced with `"[REDACTED]"` on every recording and replayed as strings
+  instead of ints. Any other value under a token-named key — a plural
+  secret container (`{"tokens": {...}}`, `oauth_tokens`, `idTokens`), a
+  non-int value under a count-shaped key (a string, a `bool`), or a
+  singular secret key with no count suffix (`token`, `otp_token`) — is
+  still redacted exactly as before, as are `Authorization`, `api_key`,
+  `access_token`, `refresh_token`, `secret`, `password`, and URL query
+  parameters such as `?token=`/`?auth_token=`. `_SECRET_KEY` itself is
+  unchanged; the exemption is a narrow, value-aware check applied only in
+  the dict-key redaction path.
+  Compatibility: cassettes recorded with v1.0.0 persisted these counts as
+  `"[REDACTED]"` (e.g. `"max_tokens": "[REDACTED]"`). Replay input
+  normalization — for matching only — folds integer token-count values to
+  the redaction marker (via the same shared `is_token_count_field`
+  predicate), so both v1.0 cassettes and new int-bearing cassettes still
+  match live requests instead of raising `ReplayMismatchError`. Persisted
+  cassettes keep the ints. A consequence is that replay matching does not
+  distinguish two different integer token counts (as in v1.0).
+
 ### Security
 - Connection-URI credential redaction: the recursive `redact()` path (recorder, hybrid,
   replay input normalization, assertions, and viewer) now scrubs passwords embedded in

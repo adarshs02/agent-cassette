@@ -46,6 +46,110 @@ def test_redacts_bare_token_field():
     assert redact({"token": "credential"}) == {"token": REDACTED}
 
 
+# --------------------------------------------------------------------------- #
+# Regression: an integer token/usage count under a count-shaped key
+# (``*tokens``/``*token[_]count``) is exempt from redaction; a plural secret
+# container, a non-int value, or a key without the count suffix is still redacted.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "input_tokens",
+        "output_tokens",
+        "max_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "total_tokens",
+        "prompt_token_count",
+        "candidates_token_count",
+        "total_token_count",
+        "promptTokenCount",
+        "inputTokens",
+        "INPUT_TOKENS",
+    ],
+)
+def test_integer_token_count_keys_are_not_redacted(key):
+    assert redact({key: 42}) == {key: 42}
+
+
+def test_usage_dict_is_fully_preserved():
+    value = {
+        "usage": {"input_tokens": 100, "output_tokens": 5, "cache_read_input_tokens": 0},
+        "max_tokens": 4096,
+    }
+    assert redact(value) == value
+
+
+def test_gemini_usage_metadata_is_fully_preserved():
+    value = {
+        "usage_metadata": {
+            "prompt_token_count": 12,
+            "candidates_token_count": 34,
+            "total_token_count": 46,
+        }
+    }
+    assert redact(value) == value
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("tokens", {"access": "A"}),  # plural secret container: whole value redacted
+        ("oauth_tokens", ["ghp_x"]),  # plural key, non-int value: still redacted
+        ("idTokens", "x"),  # plural key, string value: still redacted
+        ("input_tokens", "100"),  # count-shaped key but a string, not an int
+        ("max_tokens", True),  # count-shaped key but a bool, not a plain int
+        ("otp_token", 123456),  # int value, but key does not end in the count suffix
+        ("token", 5),  # int value, bare secret key with no count suffix
+    ],
+)
+def test_non_exempt_secret_keys_are_still_redacted(key, value):
+    assert redact({key: value}) == {key: REDACTED}
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "token",
+        "auth_token",
+        "id_token",
+        "x-token",
+        "authToken",
+        "sessionToken",
+        "accessToken",
+        "refresh_token",
+        "Token",
+        "API_TOKEN",
+    ],
+)
+def test_secret_bearing_token_keys_are_still_redacted(key):
+    assert redact({key: "credential"}) == {key: REDACTED}
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("https://h/p?token=x", "https://h/p?token=[REDACTED]"),
+        ("https://h/p?auth_token=x", "https://h/p?auth_token=[REDACTED]"),
+    ],
+)
+def test_url_query_param_token_redaction_is_unchanged(raw, expected):
+    assert redact(raw) == expected
+
+
+def test_recording_preserves_usage_token_counts(tmp_path):
+    path = tmp_path / "usage.jsonl"
+    with Cassette.record(path) as cassette:
+        cassette.add(EventType.TOOL_CALL, "request", output={"usage": {"input_tokens": 7}})
+
+    from agent_cassette.storage import load_events
+
+    events = load_events(path)
+    assert events[0].output == {"usage": {"input_tokens": 7}}
+
+
 @pytest.mark.parametrize("container_type", [dict, list, tuple])
 def test_redaction_rejects_cycles_without_exposing_values(container_type):
     secret = "never-print-this-secret"

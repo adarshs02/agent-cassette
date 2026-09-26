@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "retrace"
+version = "0.1.0"
+description = "Autonomous data-incident agent with offline-replayable evals (Agent Cassette example)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "agent-cassette[anthropic]",
+  "anthropic>=0.40,<1",
+  "duckdb>=1.1",
+  "sqlglot>=25",
+  "mcp>=1.2",
+]
+
+[project.optional-dependencies]
+datahub = ["acryl-datahub>=1.0"]
+
+[project.scripts]
+retrace = "retrace.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv.sources]
+agent-cassette = { path = "../..", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/retrace"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
