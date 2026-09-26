@@ -45,7 +45,9 @@ def _eval(args: argparse.Namespace) -> int:
         work_root=WORK_ROOT,
         trials=args.trials,
     )
-    path = write_results(results, mode, RESULTS_DIR)
+    # Replay scorecards are local scratch; only live runs update the committed results.
+    results_dir = RESULTS_DIR if mode == "live" else RESULTS_DIR / "replay"
+    path = write_results(results, mode, results_dir)
     print(path.read_text())
     skipped = [r.scenario for r in results if r.status == "skipped"]
     if skipped:

@@ -4,3 +4,4 @@ __pycache__/
 *.duckdb.wal
 /work/
 evals/results/trials/
+evals/results/replay/

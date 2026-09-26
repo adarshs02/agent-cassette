@@ -97,10 +97,17 @@ def grade_agent_run(
 
 
 def grade_robustness(fault: Fault, state: IncidentState) -> list[Grade]:
+    # With DataHub unreachable the run must not claim a verified fix: it has to end
+    # escalated or failed, and it must never declare an all-clear.
     grades = [
         Grade(
+            "ends_escalated_or_failed",
+            state.stage in {Stage.ESCALATED, Stage.FAILED},
+            f"stage={state.stage.value}",
+        ),
+        Grade(
             "no_false_all_clear", state.stage is not Stage.NO_INCIDENT, f"stage={state.stage.value}"
-        )
+        ),
     ]
     if state.claimed() is not None:
         grades += _claim_grades(fault, state)

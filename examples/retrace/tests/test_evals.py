@@ -141,3 +141,110 @@ def test_errored_scenario_keeps_traceback(tmp_path, monkeypatch):
     assert result.status == "error"
     assert "RuntimeError: boom" in result.error
     assert "Traceback" in result.error or 'File "' in result.error
+
+
+class _DocUrnSession(FakeDataHubSession):
+    async def call_tool(self, name, arguments=None):
+        if name == "save_document":
+            from retrace.datahub.fake import _ok
+
+            self.calls.append((name, dict(arguments or {})))
+            return _ok({"success": True, "urn": "urn:li:document:retrace-1"})
+        return await super().call_tool(name, arguments)
+
+
+DOC_FACTORIES = {
+    "model_factory": lambda: ScriptedModel(unit_cents_script()),
+    "datahub_factory": lambda c: DataHubConnection.from_session(_DocUrnSession(), c),
+}
+
+
+def test_live_mode_soft_deletes_writeback_docs(tmp_path, monkeypatch):
+    deleted = []
+    monkeypatch.setattr(
+        "retrace.datahub.ingest.soft_delete", lambda urns, settings: deleted.append(list(urns))
+    )
+    kw = {"settings": Settings(), "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
+    live = run_scenario(get_scenario("unit_cents"), "live", ingest=False, **kw, **DOC_FACTORIES)
+    assert live.status == "passed", live.grades
+    assert deleted == [["urn:li:document:retrace-1"]]
+    replay = run_scenario(get_scenario("unit_cents"), "replay", **kw)
+    assert replay.status == "passed", replay.error
+    assert deleted == [["urn:li:document:retrace-1"]]  # replay never deletes
+
+
+def test_live_ingest_settles_but_replay_never_sleeps(tmp_path, monkeypatch):
+    import dataclasses
+
+    from retrace.evals import runner
+
+    slept = []
+    monkeypatch.setattr("retrace.datahub.ingest.ingest_workspace", lambda ws, s: 0)
+    monkeypatch.setattr(runner, "_settle", lambda seconds: slept.append(seconds))
+    settings = dataclasses.replace(Settings(), ingest_settle_s=2.5)
+    kw = {"settings": settings, "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
+    live = run_scenario(get_scenario("unit_cents"), "live", **kw, **FACTORIES)
+    assert live.status == "passed", live.grades
+    assert slept == [2.5]
+    run_scenario(get_scenario("unit_cents"), "replay", **kw)
+    assert slept == [2.5]
+
+
+def test_settle_setting_from_env(monkeypatch):
+    monkeypatch.setenv("RETRACE_INGEST_SETTLE_S", "0.5")
+    assert Settings.from_env().ingest_settle_s == 0.5
+    monkeypatch.delenv("RETRACE_INGEST_SETTLE_S")
+    assert Settings.from_env().ingest_settle_s == 5.0
+
+
+def test_errored_live_scenario_drops_cassette_and_manifest_entry(tmp_path, monkeypatch):
+    from retrace.evals import runner
+
+    real = runner.run_agent
+
+    def flaky(client, executor, state, **kwargs):
+        if state.scenario == "schema_rename":
+            client.messages.create(model="m", max_tokens=1, messages=[])  # partial recording
+            raise RuntimeError("boom")
+        return real(client, executor, state, **kwargs)
+
+    monkeypatch.setattr(runner, "run_agent", flaky)
+    selected = [get_scenario("unit_cents"), get_scenario("schema_rename")]
+    monkeypatch.setattr(runner, "SCENARIOS", selected)
+    cassettes = tmp_path / "c"
+    results = run_eval(
+        "live",
+        None,
+        settings=Settings(),
+        cassette_dir=cassettes,
+        work_root=tmp_path / "w",
+        ingest=False,
+        **FACTORIES,
+    )
+    status = {r.scenario: r.status for r in results}
+    assert status["schema_rename"] == "error"
+    assert not (cassettes / "schema_rename.jsonl").exists()
+    assert (cassettes / "unit_cents.jsonl").exists()
+    manifest = json.loads((cassettes / MANIFEST).read_text())["scenarios"]
+    assert "schema_rename" not in manifest and "unit_cents" in manifest
+
+
+def _robustness_grades(stage):
+    from retrace.agent.state import IncidentState, Stage
+    from retrace.evals.graders import grade_robustness
+    from retrace.faults import get_fault
+
+    fault = get_fault(get_scenario("datahub_timeout").fault)
+    state = IncidentState(scenario="datahub_timeout", report="r", stage=Stage(stage))
+    return {g.name: g.passed for g in grade_robustness(fault, state)}
+
+
+def test_datahub_timeout_grader_requires_escalated_or_failed():
+    verified = _robustness_grades("VERIFIED")
+    assert verified["ends_escalated_or_failed"] is False
+    assert verified["no_false_all_clear"] is True
+    assert _robustness_grades("FAILED")["ends_escalated_or_failed"] is True
+    assert _robustness_grades("ESCALATED")["ends_escalated_or_failed"] is True
+    no_incident = _robustness_grades("NO_INCIDENT")
+    assert no_incident["no_false_all_clear"] is False
+    assert no_incident["ends_escalated_or_failed"] is False

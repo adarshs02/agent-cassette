@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 import traceback
 from collections.abc import Callable
@@ -65,6 +66,23 @@ def build_executor(
     )
 
 
+def _settle(seconds: float) -> None:
+    """Give a live DataHub time to index freshly ingested metadata."""
+    time.sleep(seconds)
+
+
+def _cleanup_live(state: IncidentState, settings: Settings) -> None:
+    """Soft-delete incident documents a live run wrote, so scenarios stay independent."""
+    if not state.writeback_urns:
+        return
+    from retrace.datahub import ingest
+
+    try:
+        ingest.soft_delete(list(state.writeback_urns), settings)
+    except Exception as error:  # noqa: BLE001 - cleanup must not mask the run result
+        print(f"WARNING: could not soft-delete {state.writeback_urns}: {error}", file=sys.stderr)
+
+
 def _manifest(cassette_dir: Path) -> list[str] | None:
     path = cassette_dir / MANIFEST
     return json.loads(path.read_text())["scenarios"] if path.exists() else None
@@ -101,13 +119,53 @@ def run_scenario(
         return ScenarioResult(scenario.name, "skipped", error="no cassette recorded yet")
 
     if mode == "live" and ingest:
-        from retrace.datahub.ingest import ingest_workspace
+        from retrace.datahub import ingest as datahub_ingest
 
-        ingest_workspace(ws, settings)
+        datahub_ingest.ingest_workspace(ws, settings)
+        _settle(settings.ingest_settle_s)
 
     source = cassette_dir / f"{scenario.base}.jsonl" if scenario.base else None
     clients_mode = "replay" if mode == "replay" else ("record" if record else "live")
     state = IncidentState(scenario=scenario.name, report=fault.report)
+    result = _run_agent_scenario(
+        scenario,
+        mode,
+        clients_mode,
+        state,
+        ws,
+        scratch,
+        baseline,
+        started,
+        settings=settings,
+        cassette=cassette,
+        source=source,
+        model_factory=model_factory,
+        datahub_factory=datahub_factory,
+    )
+    if mode == "live":
+        _cleanup_live(state, settings)
+        if result.status == "error" and clients_mode == "record" and cassette.exists():
+            cassette.unlink()  # never keep a partial recording of an errored run
+    return result
+
+
+def _run_agent_scenario(
+    scenario: Scenario,
+    mode: Literal["live", "replay"],
+    clients_mode: Literal["live", "record", "replay"],
+    state: IncidentState,
+    ws: Workspace,
+    scratch: Path,
+    baseline: dict,
+    started: float,
+    *,
+    settings: Settings,
+    cassette: Path,
+    source: Path | None,
+    model_factory: Callable[[], Any] | None,
+    datahub_factory: Callable[[Any | None], DataHubConnection] | None,
+) -> ScenarioResult:
+    fault = get_fault(scenario.fault)
     try:
         with open_clients(
             clients_mode,
@@ -205,6 +263,7 @@ def run_eval(
             results.append(result)
     if mode == "live" and not names:
         cassette_dir.mkdir(parents=True, exist_ok=True)
-        recorded = sorted(p.stem for p in cassette_dir.glob("*.jsonl"))
+        errored = {r.scenario for r in results if r.status == "error"}
+        recorded = sorted(p.stem for p in cassette_dir.glob("*.jsonl") if p.stem not in errored)
         (cassette_dir / MANIFEST).write_text(json.dumps({"scenarios": recorded}, indent=2) + "\n")
     return results

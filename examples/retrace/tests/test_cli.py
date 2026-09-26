@@ -7,7 +7,25 @@ def test_eval_replay_gate_only(tmp_path, monkeypatch, capsys):
     code = cli.main(["eval", "--replay", "--scenarios", "bad_repair_rejected"])
     assert code == 0
     assert "bad_repair_rejected" in capsys.readouterr().out
+    assert (tmp_path / "results" / "replay" / "scorecard.md").exists()
+    assert not (tmp_path / "results" / "scorecard.md").exists()
+
+
+def test_eval_live_writes_top_level_results(tmp_path, monkeypatch):
+    from retrace.evals import runner
+
+    monkeypatch.setattr(cli, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(cli, "WORK_ROOT", tmp_path / "work")
+    monkeypatch.setattr(runner, "run_eval", lambda *a, **k: [])
+    assert cli.main(["eval", "--live", "--scenarios", "bad_repair_rejected"]) == 0
     assert (tmp_path / "results" / "scorecard.md").exists()
+    assert not (tmp_path / "results" / "replay").exists()
+
+
+def test_replay_results_are_gitignored():
+    from retrace.config import APP_ROOT
+
+    assert "evals/results/replay/" in (APP_ROOT / ".gitignore").read_text().splitlines()
 
 
 def test_eval_requires_mode():

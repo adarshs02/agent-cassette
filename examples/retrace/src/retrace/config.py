@@ -21,6 +21,7 @@ class Settings:
     max_turns: int = 40
     max_repair_attempts: int = 3
     max_nudges: int = 2
+    ingest_settle_s: float = 5.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -29,4 +30,5 @@ class Settings:
             datahub_gms_url=os.environ.get("DATAHUB_GMS_URL", "http://localhost:8080"),
             datahub_gms_token=os.environ.get("DATAHUB_GMS_TOKEN") or None,
             mcp_server_spec=os.environ.get("RETRACE_MCP_SERVER", "mcp-server-datahub"),
+            ingest_settle_s=float(os.environ.get("RETRACE_INGEST_SETTLE_S", "5.0")),
         )
