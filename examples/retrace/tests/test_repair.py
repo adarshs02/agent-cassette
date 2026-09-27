@@ -1,6 +1,7 @@
 import hashlib
 
 import pytest
+from retrace.datahub.catalog import dataset_urn
 from retrace.faults import get_fault
 from retrace.pipeline.workspace import prepare
 from retrace.tools.repair import Repairer, RepairRejected, Transforms, allowed_repair_targets
@@ -17,6 +18,28 @@ def test_allowed_targets():
         "exec_metric",
     }
     assert "stg_customers" not in allowed_repair_targets("raw.raw_orders")
+
+
+def test_allowed_targets_includes_the_transform_that_produces_the_asset():
+    # staging.stg_orders is PRODUCED by stg_orders.sql; that transform must be
+    # a valid repair target for its own output table, not just its consumers.
+    assert allowed_repair_targets("staging.stg_orders") == {
+        "stg_orders",
+        "fct_revenue",
+        "exec_metric",
+    }
+    # raw tables have no producing transform in this pipeline; unaffected by the fix.
+    assert allowed_repair_targets("raw.raw_orders") == {"stg_orders", "fct_revenue", "exec_metric"}
+
+
+def test_allowed_targets_marts_table_includes_its_own_producer():
+    assert allowed_repair_targets("marts.fct_revenue") == {"fct_revenue", "exec_metric"}
+    assert allowed_repair_targets("marts.exec_metric") == {"exec_metric"}
+
+
+def test_allowed_targets_accepts_urn_input():
+    urn = dataset_urn("staging.stg_orders")
+    assert allowed_repair_targets(urn) == {"stg_orders", "fct_revenue", "exec_metric"}
 
 
 def test_reference_fix_passes_and_originals_untouched(tmp_path, baseline):

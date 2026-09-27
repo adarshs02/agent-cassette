@@ -10,7 +10,7 @@ from typing import Any
 
 from retrace.pipeline.build import TRANSFORM_ORDER, BuildError, build
 from retrace.pipeline.checks import failed_names, run_checks
-from retrace.pipeline.lineage import dependency_closure, table_name
+from retrace.pipeline.lineage import TABLE_PRODUCERS, dependency_closure, table_name
 from retrace.pipeline.workspace import Workspace
 
 
@@ -50,8 +50,20 @@ class Transforms:
 
 
 def allowed_repair_targets(asset: str) -> set[str]:
+    """Transforms allowed to repair ``asset``: its producer plus everything downstream.
+
+    A transform is allowed if ``asset`` is in its dependency closure (it reads
+    the table, directly or transitively) OR the transform IS the one that
+    produces ``asset`` (the inverse of OUTPUT_TABLES) -- fixing a table's own
+    root cause means patching the transform that creates it, not just its
+    consumers.
+    """
     table = table_name(asset)
-    return {name for name, deps in dependency_closure().items() if table in deps}
+    targets = {name for name, deps in dependency_closure().items() if table in deps}
+    producer = TABLE_PRODUCERS.get(table)
+    if producer is not None:
+        targets.add(producer)
+    return targets
 
 
 def unified_diff(original_dir: Path, patched: dict[str, str]) -> str:
@@ -106,8 +118,8 @@ class Repairer:
         allowed = allowed_repair_targets(root_asset)
         if stem not in allowed:
             raise RepairRejected(
-                f"{stem}.sql is not downstream of {table_name(root_asset)}; "
-                f"allowed: {sorted(allowed)}"
+                f"{stem}.sql is not the producer of, or downstream of, "
+                f"{table_name(root_asset)}; allowed: {sorted(allowed)}"
             )
         new_sql = self._keep_attribution_header(stem, new_sql)
         self.attempts += 1

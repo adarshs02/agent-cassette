@@ -167,7 +167,10 @@ def test_second_write_back_after_escalation_errors(executor):
     assert "error" in out and "already written back" in out["error"]
 
 
-def test_second_confirm_root_cause_errors_and_claim_unchanged(executor):
+def test_confirm_root_cause_after_a_passing_repair_errors_and_claim_unchanged(executor):
+    # A root cause can be revised freely up until a repair actually passes; once
+    # verified, the claim is locked (a second confirm before that point is now a
+    # revision, not an error -- see test_revise_root_cause_before_repair_is_accepted).
     ex = executor
     ex.dispatch(
         "datahub_lineage",
@@ -183,6 +186,9 @@ def test_second_confirm_root_cause_errors_and_claim_unchanged(executor):
             "evidence_ids": ["ev_001", "ev_002"],
         },
     )
+    sql = get_fault("unit_cents").reference_patch["stg_orders"]
+    passed = ex.dispatch("propose_repair", {"file": "stg_orders.sql", "new_sql": sql})
+    assert passed["passed"] is True and ex.state.stage is Stage.VERIFIED
     original = ex.state.root_cause
     out = ex.dispatch(
         "confirm_root_cause",
@@ -194,7 +200,66 @@ def test_second_confirm_root_cause_errors_and_claim_unchanged(executor):
         },
     )
     assert "error" in out
+    assert "already confirmed and repaired" in out["error"]
     assert ex.state.root_cause == original
+    assert ex.state.stage is Stage.VERIFIED
+
+
+def test_revise_root_cause_before_repair_is_accepted(executor):
+    ex = executor
+    _confirm(ex)  # confirms raw.raw_orders
+    original = ex.state.root_cause
+    out = ex.dispatch(
+        "confirm_root_cause",
+        {
+            "asset": "staging.stg_orders",
+            "field": "amount",
+            "summary": "revised: the cast happens in staging, not raw",
+            "evidence_ids": ["ev_001", "ev_002"],
+        },
+    )
+    assert out == {"accepted": True, "revised": True, "stage": "ROOT_CAUSE_CONFIRMED"}
+    assert ex.state.root_cause != original
+    assert ex.state.root_cause.asset == "staging.stg_orders"
+
+
+def test_revise_root_cause_after_failed_repair_changes_allowed_repair_targets(executor):
+    ex = executor
+    ex.dispatch(
+        "datahub_lineage",
+        {"urn": dataset_urn("marts.exec_metric"), "direction": "upstream", "max_hops": 3},
+    )
+    ex.dispatch("profile_column", {"table": "raw.raw_orders", "column": "amount"})
+    ex.dispatch(
+        "confirm_root_cause",
+        {
+            "asset": "raw.raw_customers",
+            "summary": "first guess: the customer join",
+            "evidence_ids": ["ev_001", "ev_002"],
+        },
+    )
+    bad = ex.transforms.read("stg_customers")
+    out = ex.dispatch("propose_repair", {"file": "stg_customers.sql", "new_sql": bad})
+    assert out["passed"] is False and ex.state.stage is Stage.REPAIRING
+
+    out = ex.dispatch(
+        "confirm_root_cause",
+        {
+            "asset": "raw.raw_orders",
+            "field": "amount",
+            "summary": "revised: it is actually the orders feed",
+            "evidence_ids": ["ev_001", "ev_002"],
+        },
+    )
+    assert out == {"accepted": True, "revised": True, "stage": "REPAIRING"}
+    assert ex.state.root_cause.asset == "raw.raw_orders"
+
+    # stg_orders.sql is not downstream of raw.raw_customers (the stale claim), only
+    # of raw.raw_orders (the revised one). Passing here proves propose_repair's
+    # allowed-targets check used the revised asset, not the stale one.
+    sql = get_fault("unit_cents").reference_patch["stg_orders"]
+    out = ex.dispatch("propose_repair", {"file": "stg_orders.sql", "new_sql": sql})
+    assert out["passed"] is True and ex.state.stage is Stage.VERIFIED
 
 
 def test_second_escalate_errors(executor):
