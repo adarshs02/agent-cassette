@@ -193,8 +193,10 @@ class ToolExecutor:
         # A root cause may be revised (while ROOT_CAUSE_CONFIRMED or REPAIRING) as
         # long as no repair has passed yet. Once a repair passes (state.patched is
         # non-empty) or the run has moved to a terminal/verified stage, it is locked.
-        if self.state.patched or self.state.stage in self._ROOT_CAUSE_LOCKED_STAGES:
+        if self.state.patched:
             raise GateError("root cause already confirmed and repaired")
+        if self.state.stage in self._ROOT_CAUSE_LOCKED_STAGES:
+            raise GateError(f"cannot confirm a root cause in stage {self.state.stage.value}")
         revising = self.state.root_cause is not None
         claim = self._claim(asset, field, summary, evidence_ids)
         if revising:

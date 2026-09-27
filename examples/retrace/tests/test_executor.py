@@ -262,6 +262,96 @@ def test_revise_root_cause_after_failed_repair_changes_allowed_repair_targets(ex
     assert out["passed"] is True and ex.state.stage is Stage.VERIFIED
 
 
+def test_confirm_root_cause_after_escalate_errors(executor):
+    ex = executor
+    ex.dispatch(
+        "datahub_lineage",
+        {"urn": dataset_urn("marts.exec_metric"), "direction": "upstream", "max_hops": 3},
+    )
+    ex.dispatch("profile_column", {"table": "raw.raw_orders", "column": "amount"})
+    ex.dispatch(
+        "escalate_upstream",
+        {
+            "asset": "raw.raw_orders",
+            "field": "amount",
+            "reason": "upstream freshness issue",
+            "evidence_ids": ["ev_001", "ev_002"],
+        },
+    )
+    assert ex.state.stage is Stage.ESCALATED
+    original = ex.state.root_cause
+    out = ex.dispatch(
+        "confirm_root_cause",
+        {
+            "asset": "raw.raw_orders",
+            "field": "amount",
+            "summary": "too late",
+            "evidence_ids": ["ev_001", "ev_002"],
+        },
+    )
+    assert "error" in out
+    assert out["error"] == "cannot confirm a root cause in stage ESCALATED"
+    assert ex.state.root_cause == original
+
+
+def test_confirm_root_cause_after_write_back_errors(executor):
+    ex = executor
+    _confirm(ex)
+    sql = get_fault("unit_cents").reference_patch["stg_orders"]
+    passed = ex.dispatch("propose_repair", {"file": "stg_orders.sql", "new_sql": sql})
+    assert passed["passed"] is True and ex.state.stage is Stage.VERIFIED
+    assert ex.dispatch("write_back", {"summary": "fixed"})["written_back"] is True
+    assert ex.state.stage is Stage.WRITTEN_BACK
+    original = ex.state.root_cause
+    out = ex.dispatch(
+        "confirm_root_cause",
+        {
+            "asset": "raw.raw_orders",
+            "field": "amount",
+            "summary": "too late",
+            "evidence_ids": ["ev_001", "ev_002"],
+        },
+    )
+    assert "error" in out
+    assert out["error"] == "root cause already confirmed and repaired"
+    assert ex.state.root_cause == original
+
+
+def test_confirm_root_cause_after_no_incident_errors(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault=None)
+    conn = DataHubConnection.from_session(FakeDataHubSession())
+    state = IncidentState(scenario="none", report="r")
+    ex = ToolExecutor(
+        state,
+        Warehouse(ws.warehouse, baseline),
+        Transforms(ws),
+        Repairer(ws, baseline, tmp_path / "scratch"),
+        DataHubTools(conn),
+    )
+    try:
+        evidence = ex.dispatch("compare_to_baseline", {"last_days": 14})
+        out = ex.dispatch(
+            "declare_no_incident",
+            {"summary": "within band", "evidence_ids": [evidence["evidence_id"]]},
+        )
+        assert out["accepted"] is True and ex.state.stage is Stage.NO_INCIDENT
+        original = ex.state.root_cause
+        out = ex.dispatch(
+            "confirm_root_cause",
+            {
+                "asset": "raw.raw_orders",
+                "field": "amount",
+                "summary": "too late",
+                "evidence_ids": [evidence["evidence_id"]],
+            },
+        )
+        assert "error" in out
+        assert out["error"] == "cannot confirm a root cause in stage NO_INCIDENT"
+        assert ex.state.root_cause == original
+    finally:
+        conn.close()
+
+
 def test_second_escalate_errors(executor):
     ex = executor
     ex.dispatch(
