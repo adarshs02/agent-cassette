@@ -1,8 +1,10 @@
-"""Grader-level tests: the format-robustness variant grade for sql_repair faults."""
+"""Grader-level tests: the format-robustness variant grade (Fix 1b) and
+alternate acceptable root-cause fields (Fix 2)."""
 
 import csv
 
-from retrace.evals.graders import _variant_verify
+from retrace.agent.state import Claim, IncidentState, Stage
+from retrace.evals.graders import _claim_grades, _variant_verify
 from retrace.faults import get_fault
 from retrace.pipeline.checks import failed_names, run_checks
 from retrace.pipeline.generate import generate
@@ -44,12 +46,12 @@ def test_variant_actually_rewrites_some_legacy_pos_rows(tmp_path):
     after = _rows(varied / "raw_orders_part1.csv") + _rows(varied / "raw_orders_part2.csv")
     changed = sum(
         1
-        for b, a in zip(before, after)
+        for b, a in zip(before, after, strict=True)
         if b["payment_processor"] == "legacy_pos" and b["amount"] != a["amount"]
     )
     assert changed > 0, "variant must be non-vacuous: it should reformat some legacy_pos rows"
     # The value itself is unchanged, only its string format.
-    for b, a in zip(before, after):
+    for b, a in zip(before, after, strict=True):
         if b["amount"] != a["amount"]:
             assert float(b["amount"]) == float(a["amount"])
 
@@ -76,3 +78,28 @@ def test_format_heuristic_patch_fails_the_variant_grade_on_historical_immutabili
     grade = _variant_verify(fault, _HEURISTIC_PATCH, baseline, tmp_path / "scratch")
     assert not grade.passed
     assert "historical_revenue_immutable" in grade.detail
+
+
+def _stale_feed_field_grade(field: str):
+    fault = get_fault("stale_feed")
+    state = IncidentState(scenario="stale_feed", report="r", stage=Stage.ESCALATED)
+    state.escalation = Claim(
+        asset="raw.raw_fx_rates", field=field, summary="s", evidence_ids=["ev_001"]
+    )
+    grades = {g.name: g for g in _claim_grades(fault, state)}
+    return grades["root_cause_field"]
+
+
+def test_stale_feed_accepts_the_ground_truth_field():
+    assert _stale_feed_field_grade("rate_day").passed
+
+
+def test_stale_feed_accepts_the_alt_field():
+    assert _stale_feed_field_grade("usd_rate").passed
+
+
+def test_stale_feed_rejects_an_unrelated_field():
+    grade = _stale_feed_field_grade("currency")
+    assert not grade.passed
+    assert "rate_day" in grade.detail
+    assert "usd_rate" in grade.detail

@@ -123,7 +123,7 @@ def strip_sql_comments(sql: str) -> str:
     if not tokens:
         return sql
     parts: list[str] = [_strip_sql_comments_regex(sql[: tokens[0].start])]
-    for prev, cur in zip(tokens, tokens[1:]):
+    for prev, cur in zip(tokens, tokens[1:], strict=False):
         parts.append(sql[prev.start : prev.end + 1])
         parts.append(_strip_sql_comments_regex(sql[prev.end + 1 : cur.start]))
     parts.append(sql[tokens[-1].start : tokens[-1].end + 1])

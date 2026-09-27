@@ -52,6 +52,11 @@ def test_extending_fx_fill_does_not_fix_stale_feed(tmp_path, baseline):
 
 @pytest.mark.parametrize("name", ESCALATE)
 def test_escalate_reports_do_not_leak(name):
-    report = get_fault(name).report.lower()
+    fault = get_fault(name)
+    report = fault.report.lower()
     for token in ("fx", "feed", "null", "rate", "missing", "cloudpay"):
         assert token not in report
+    if fault.ground_truth.field is not None:
+        assert fault.ground_truth.field not in report
+    for alt_field in fault.ground_truth.alt_fields:
+        assert alt_field not in report

@@ -252,8 +252,8 @@ SDK retries with backoff for transient errors.
 - `bad_repair_rejected` — a naive blanket `/100` patch is applied through
   `tools/repair` without the LLM; it must fail historical-immutability checks.
   Always runs; needs nothing.
-- `datahub_timeout` — DataHub call #3 raises (Agent Cassette injection). Must end
-  `ESCALATED` or `FAILED`, never `NO_INCIDENT`.
+- `datahub_timeout` — every DataHub call raises from the first (Agent Cassette
+  injection). Must end `ESCALATED` or `FAILED`, never `NO_INCIDENT`.
 - `rate_limit_midrun` — one Anthropic call returns 429. Must retry and reach the
   same terminal stage as the uninjected run.
 

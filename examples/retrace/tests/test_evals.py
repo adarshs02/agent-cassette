@@ -53,6 +53,20 @@ def test_live_then_replay_unit_cents(tmp_path):
     assert replay.stats == live.stats
 
 
+def test_datahub_timeout_from_first_call_cannot_gather_lineage_and_ends_failed(tmp_path):
+    # The outage must start at the very first DataHub call: the agent can never
+    # cite lineage evidence, so confirm_root_cause/escalate_upstream can never
+    # pass their gate, and the run can only end FAILED (never a false VERIFIED,
+    # which is what let a real run slip through before this fix).
+    kw = {"settings": Settings(), "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
+    base = run_scenario(get_scenario("unit_cents"), "live", ingest=False, **kw, **FACTORIES)
+    assert base.status == "passed", base.grades
+
+    result = run_scenario(get_scenario("datahub_timeout"), "live", ingest=False, **kw, **FACTORIES)
+    assert result.final_stage == "FAILED", result.final_stage
+    assert result.status == "passed", result.grades
+
+
 def test_wrong_answer_is_graded_failed(tmp_path):
     kw = {"settings": Settings(), "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
     result = run_scenario(

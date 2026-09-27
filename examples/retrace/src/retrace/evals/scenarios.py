@@ -34,7 +34,13 @@ def datahub_outage(from_call: int = 3, through: int = 60) -> tuple[InjectionRule
 SCENARIOS: list[Scenario] = [
     *(Scenario(name, name, "agent") for name in fault_names()),
     Scenario("bad_repair_rejected", "unit_cents", "gate"),
-    Scenario("datahub_timeout", "unit_cents", "robustness", datahub_outage(), base="unit_cents"),
+    Scenario(
+        "datahub_timeout",
+        "unit_cents",
+        "robustness",
+        datahub_outage(from_call=1),
+        base="unit_cents",
+    ),
     Scenario(
         "rate_limit_midrun",
         "unit_cents",

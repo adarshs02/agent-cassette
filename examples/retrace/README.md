@@ -34,7 +34,7 @@ no API key and no DataHub.
 | control_healthy | none | no incident |
 | control_distractor | FX one day stale, negligible | no incident |
 | bad_repair_rejected | naive blanket `/100` fix | rejected by gates |
-| datahub_timeout | DataHub fails from call 3 | never a false all-clear |
+| datahub_timeout | DataHub down from the first call | never a false all-clear |
 | rate_limit_midrun | Anthropic 429 mid-run | retries, same outcome |
 
 ## Run it

@@ -48,9 +48,12 @@ def _claim_grades(fault: Fault, state: IncidentState) -> list[Grade]:
     ]
     if truth.field is not None:
         got = (claim.field or "").lower()
+        accepted = {truth.field, *truth.alt_fields}
         grades.append(
             Grade(
-                "root_cause_field", got == truth.field, f"expected {truth.field}, got {claim.field}"
+                "root_cause_field",
+                got in accepted,
+                f"expected one of {sorted(accepted)}, got {claim.field}",
             )
         )
     return grades
