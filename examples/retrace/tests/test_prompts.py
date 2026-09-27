@@ -118,3 +118,22 @@ def test_system_prompt_lines_are_readable():
         assert len(line) <= 100, (
             f"Line {i} of SYSTEM_PROMPT is {len(line)} chars, exceeds 100: {line}"
         )
+
+
+def test_system_prompt_defines_root_cause_asset():
+    """Verify the system prompt defines root-cause asset as the originating table."""
+    from retrace.agent.prompts import SYSTEM_PROMPT
+
+    normalized = " ".join(SYSTEM_PROMPT.split())
+    assert "most upstream table where the bad data or defect originates" in normalized
+
+
+def test_root_cause_and_escalate_tools_clarify_asset_origin():
+    """Verify tools clarify the asset is the originating, upstream table."""
+    from retrace.agent.prompts import TOOL_SCHEMAS
+
+    confirm_tool = next(t for t in TOOL_SCHEMAS if t["name"] == "confirm_root_cause")
+    escalate_tool = next(t for t in TOOL_SCHEMAS if t["name"] == "escalate_upstream")
+
+    assert "not the file you patch" in confirm_tool["description"]
+    assert "not the file you patch" in escalate_tool["description"]
