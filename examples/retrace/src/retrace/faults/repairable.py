@@ -25,6 +25,20 @@ def _inject_unit_cents(frames: Frames) -> None:
             row["amount"] = str(int(round(float(row["amount"]) * 100)))
 
 
+def _variant_bare_integer_amounts(frames: Frames) -> None:
+    """Reformat legacy_pos whole-dollar amounts from "40.00" to "40".
+
+    The numeric value is unchanged, so a correctly scoped fix (and the
+    baseline/checks it's judged against) is unaffected. A repair that instead
+    infers cents from string format (e.g. "no '.' means cents") rather than
+    from ``payment_processor`` breaks on this variant, since legacy_pos rows
+    have always been real dollars regardless of how the string looks.
+    """
+    for row in frames.orders:
+        if row["payment_processor"] == "legacy_pos" and row["amount"].endswith(".00"):
+            row["amount"] = row["amount"].removesuffix(".00")
+
+
 register(
     Fault(
         name="unit_cents",
@@ -45,6 +59,7 @@ register(
             files_within("stg_orders", "fct_revenue"),
             mentions_all(NEW_PROCESSOR, "100"),
         ),
+        variant=_variant_bare_integer_amounts,
     )
 )
 
