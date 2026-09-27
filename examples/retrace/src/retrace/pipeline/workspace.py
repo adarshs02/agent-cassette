@@ -38,8 +38,8 @@ class Workspace:
         return cls(root)
 
 
-def prepare(root: Path, fault: str | None) -> Workspace:
+def prepare(root: Path, fault: str | None, *, variant: bool = False) -> Workspace:
     ws = Workspace.create(root)
-    generate(ws.sources, fault)
+    generate(ws.sources, fault, variant=variant)
     build(ws.sources, ws.transforms, ws.warehouse)
     return ws

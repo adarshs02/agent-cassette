@@ -18,6 +18,13 @@ class RepairRejected(ValueError):
     """The proposed repair target is not allowed."""
 
 
+ATTRIBUTION_PREFIX = "-- Adapted from Project Blackbox"
+
+
+def _first_nonempty_line(text: str) -> str | None:
+    return next((line for line in text.splitlines() if line.strip()), None)
+
+
 @dataclass
 class RepairOutcome:
     passed: bool
@@ -74,6 +81,23 @@ class Repairer:
         self.scratch_root = scratch_root
         self.attempts = 0
 
+    def _keep_attribution_header(self, stem: str, new_sql: str) -> str:
+        """Deterministically restore a dropped Project Blackbox attribution line.
+
+        If the transform being patched originally started with the attribution
+        comment and ``new_sql``'s own first *non-empty* line isn't that exact
+        line, prepend it. Checking the leading position (rather than a substring
+        search anywhere in the text) avoids being fooled by the header text
+        merely appearing later in the file, e.g. buried in a mid-file comment.
+        The repair is otherwise untouched.
+        """
+        original = (self.ws.transforms / f"{stem}.sql").read_text()
+        first_line = original.splitlines()[0] if original else ""
+        kept = _first_nonempty_line(new_sql) == first_line
+        if first_line.startswith(ATTRIBUTION_PREFIX) and not kept:
+            return f"{first_line}\n{new_sql}"
+        return new_sql
+
     def propose(
         self, file: str, new_sql: str, root_asset: str, accepted: dict[str, str]
     ) -> RepairOutcome:
@@ -85,6 +109,7 @@ class Repairer:
                 f"{stem}.sql is not downstream of {table_name(root_asset)}; "
                 f"allowed: {sorted(allowed)}"
             )
+        new_sql = self._keep_attribution_header(stem, new_sql)
         self.attempts += 1
         scratch = self.scratch_root / f"attempt_{self.attempts}"
         if scratch.exists():

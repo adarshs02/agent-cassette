@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
+
+import sqlglot
+import sqlglot.errors
 
 from retrace.pipeline.generate import Frames
 from retrace.pipeline.workspace import TRANSFORMS_DIR
@@ -17,6 +21,7 @@ class GroundTruth:
     outcome: Outcome
     asset: str | None
     field: str | None
+    alt_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,6 +43,7 @@ class Fault:
     must_fail: tuple[str, ...] = ()
     reference_patch: dict[str, str] | None = None
     repair_rules: tuple[RuleFn, ...] = field(default_factory=tuple)
+    variant: Callable[[Frames], None] | None = None
 
 
 _REGISTRY: dict[str, Fault] = {}
@@ -66,6 +72,64 @@ def patched_transform(name: str, old: str, new: str) -> dict[str, str]:
     return {name: original.replace(old, new)}
 
 
+# A comment-stripping regex that also recognizes quoted strings/identifiers, so it
+# can be applied even where a literal containing "--" or "/*" might be present
+# without mangling it (the quoted branches match first and are copied through as-is).
+_SQL_TOKEN_OR_COMMENT_RE = re.compile(
+    r"'(?:[^']|'')*'" r'|"(?:[^"]|"")*"' r"|--[^\n]*" r"|/\*.*?\*/",
+    re.DOTALL,
+)
+
+
+def _strip_sql_comments_regex(sql: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        text = match.group()
+        return "" if text.startswith(("--", "/*")) else text
+
+    return _SQL_TOKEN_OR_COMMENT_RE.sub(_replace, sql)
+
+
+def strip_sql_comments(sql: str) -> str:
+    """Remove ``-- ...`` line comments and ``/* ... */`` block comments from SQL.
+
+    Repair rules must judge the *code*, not comments -- a rule like
+    ``mentions_all("cloudpay_v2", "100")`` should not pass just because a patch's
+    comment happens to namedrop the right processor while the logic itself is an
+    unscoped format heuristic.
+
+    Preferred path: sqlglot's tokenizer (duckdb dialect) gives the exact source
+    span of every real token. By construction, whatever lies *between* two
+    adjacent spans (or before the first one) is nothing but whitespace and/or
+    comments -- a tokenizer can't emit an in-between span that contains actual
+    code, since that code would itself be a token. That makes it safe to run the
+    comment-stripping regex on just those gaps: it can never mistake a string
+    literal for a comment there, because a literal is always its own complete
+    token and is copied through unmodified via its span, never via a gap. This
+    sidesteps needing to know which side of a gap sqlglot happened to attach a
+    given comment to (it's inconsistent: a same-line trailing comment attaches
+    to the token before it, one on its own line attaches to the token after).
+
+    Falls back to running that same regex over the *whole* string only if the
+    tokenizer cannot lex the SQL at all (``SqlglotError``, e.g. an unterminated
+    string/comment in an in-progress patch); there, a literal containing ``--``
+    is still protected because the regex's quoted-string/identifier branches are
+    tried first and copied through as-is, but this path is unvalidated against
+    every SQL corner case, so it is a best-effort fallback only.
+    """
+    try:
+        tokens = sqlglot.tokenize(sql, read="duckdb")
+    except sqlglot.errors.SqlglotError:
+        return _strip_sql_comments_regex(sql)
+    if not tokens:
+        return sql
+    parts: list[str] = [_strip_sql_comments_regex(sql[: tokens[0].start])]
+    for prev, cur in zip(tokens, tokens[1:], strict=False):
+        parts.append(sql[prev.start : prev.end + 1])
+        parts.append(_strip_sql_comments_regex(sql[prev.end + 1 : cur.start]))
+    parts.append(sql[tokens[-1].start : tokens[-1].end + 1])
+    return "".join(parts)
+
+
 def files_within(*names: str) -> RuleFn:
     def rule(patched: dict[str, str]) -> RuleResult:
         extra = sorted(set(patched) - set(names))
@@ -78,9 +142,14 @@ def files_within(*names: str) -> RuleFn:
     return rule
 
 
+def _patched_code_text(patched: dict[str, str]) -> str:
+    """Join patched SQL with comments stripped, so rules judge code, not comments."""
+    return "\n".join(strip_sql_comments(sql) for sql in patched.values()).lower()
+
+
 def mentions_all(*needles: str) -> RuleFn:
     def rule(patched: dict[str, str]) -> RuleResult:
-        text = "\n".join(patched.values()).lower()
+        text = _patched_code_text(patched)
         missing = [n for n in needles if n.lower() not in text]
         return RuleResult(f"mentions_all({', '.join(needles)})", not missing, f"missing={missing}")
 
@@ -89,7 +158,7 @@ def mentions_all(*needles: str) -> RuleFn:
 
 def mentions_any(*needles: str) -> RuleFn:
     def rule(patched: dict[str, str]) -> RuleResult:
-        text = "\n".join(patched.values()).lower()
+        text = _patched_code_text(patched)
         hit = [n for n in needles if n.lower() in text]
         return RuleResult(f"mentions_any({', '.join(needles)})", bool(hit), f"found={hit}")
 

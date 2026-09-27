@@ -12,7 +12,7 @@ from retrace.faults import Fault, evaluate_rules, get_fault, patched_transform
 from retrace.pipeline.build import BuildError, build
 from retrace.pipeline.checks import failed_names, run_checks
 from retrace.pipeline.lineage import table_name
-from retrace.pipeline.workspace import Workspace
+from retrace.pipeline.workspace import Workspace, prepare
 from retrace.tools.repair import Repairer
 
 EXPECTED_STAGE = {
@@ -48,9 +48,12 @@ def _claim_grades(fault: Fault, state: IncidentState) -> list[Grade]:
     ]
     if truth.field is not None:
         got = (claim.field or "").lower()
+        accepted = {truth.field, *truth.alt_fields}
         grades.append(
             Grade(
-                "root_cause_field", got == truth.field, f"expected {truth.field}, got {claim.field}"
+                "root_cause_field",
+                got in accepted,
+                f"expected one of {sorted(accepted)}, got {claim.field}",
             )
         )
     return grades
@@ -75,6 +78,27 @@ def _independent_verify(
     return Grade("invariants_after_repair", not failed, f"failed={failed}")
 
 
+def _variant_verify(fault: Fault, patched: dict[str, str], baseline: dict, scratch: Path) -> Grade:
+    """Re-verify the agent's patch against a format-variant of the same fault.
+
+    A repair that infers the fix from incidental string formatting (e.g. "no
+    decimal point means cents") rather than from the actual root cause passes
+    the normal invariant run but breaks once the data's formatting shifts
+    without the underlying bug changing. ``prepare(..., variant=True)``
+    regenerates sources with the fault's ``variant`` applied after ``inject``,
+    so a correctly scoped fix is unaffected while a format-heuristic one isn't.
+    """
+    ws = prepare(scratch / "variant", fault.name, variant=True)
+    for name, sql in patched.items():
+        (ws.transforms / f"{name}.sql").write_text(sql)
+    try:
+        build(ws.sources, ws.transforms, ws.warehouse)
+    except BuildError as error:
+        return Grade("robust_to_format_variant", False, str(error))
+    failed = failed_names(run_checks(ws.warehouse, baseline))
+    return Grade("robust_to_format_variant", not failed, f"failed={failed}")
+
+
 def grade_agent_run(
     fault: Fault, state: IncidentState, ws: Workspace, scratch: Path, baseline: dict
 ) -> list[Grade]:
@@ -91,6 +115,8 @@ def grade_agent_run(
     if fault.ground_truth.outcome == "sql_repair":
         grades += [Grade(r.name, r.passed, r.detail) for r in evaluate_rules(fault, state.patched)]
         grades.append(_independent_verify(ws, state.patched, baseline, scratch))
+        if fault.variant is not None:
+            grades.append(_variant_verify(fault, state.patched, baseline, scratch))
     else:
         grades.append(Grade("no_patch", not state.patched, f"patched={sorted(state.patched)}"))
     return grades

@@ -125,10 +125,13 @@ def write_sources(frames: Frames, sources: Path) -> None:
     _write_csv(sources / "raw_fx_rates.csv", frames.fx_rates)
 
 
-def generate(sources: Path, fault: str | None = None) -> None:
+def generate(sources: Path, fault: str | None = None, *, variant: bool = False) -> None:
     frames = generate_frames()
     if fault is not None:
         from retrace.faults import get_fault
 
-        get_fault(fault).inject(frames)
+        fault_obj = get_fault(fault)
+        fault_obj.inject(frames)
+        if variant and fault_obj.variant is not None:
+            fault_obj.variant(frames)
     write_sources(frames, sources)

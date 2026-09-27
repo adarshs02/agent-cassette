@@ -24,7 +24,9 @@ register(
         name="stale_feed",
         report="Exec revenue dipped over the last two days. Is the data OK?",
         inject=_inject_stale_feed,
-        ground_truth=GroundTruth("escalate", "raw.raw_fx_rates", "rate_day"),
+        ground_truth=GroundTruth(
+            "escalate", "raw.raw_fx_rates", "rate_day", alt_fields=("usd_rate",)
+        ),
         must_fail=("fx_feed_fresh", "revenue_within_baseline_band"),
     )
 )
