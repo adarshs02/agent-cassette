@@ -13,6 +13,7 @@ from retrace.config import Settings
 from retrace.datahub.catalog import (
     DATASET_DOCS,
     FIELD_DOCS,
+    INCIDENT_TAG,
     OWNERS,
     PLATFORM,
     TABLES,
@@ -60,6 +61,18 @@ def build_proposals(warehouse: Path) -> list[Any]:
     upstreams: dict[str, list[str]] = {}
     for up, down in lineage_edges():
         upstreams.setdefault(down, []).append(up)
+    # Tag entities must exist before GlobalTags/add_tags can reference them; emit
+    # them before any dataset proposal. Preserve first-seen order for determinism.
+    all_tags = list(dict.fromkeys([INCIDENT_TAG, *(tag for tags in TAGS.values() for tag in tags)]))
+    for tag in all_tags:
+        proposals.append(
+            MCPW(
+                entityUrn=f"urn:li:tag:{tag}",
+                aspect=models.TagPropertiesClass(
+                    name=tag, description=f"Retrace-managed tag: {tag}."
+                ),
+            )
+        )
     con = duckdb.connect(str(warehouse), read_only=True)
     try:
         for table in TABLES:

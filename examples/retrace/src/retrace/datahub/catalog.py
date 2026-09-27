@@ -140,6 +140,10 @@ TAGS: dict[str, list[str]] = {
     "marts.fct_revenue": ["revenue"],
 }
 
+# Tag DataHub attaches to datasets Retrace flags during an incident write-back.
+# The tag entity itself must exist before `add_tags` can reference it.
+INCIDENT_TAG = "retrace-incident"
+
 
 def dataset_urn(table: str) -> str:
     return f"urn:li:dataset:(urn:li:dataPlatform:{PLATFORM},{table},{ENV})"

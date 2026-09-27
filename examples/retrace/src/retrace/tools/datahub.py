@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 from typing import Any
 
+from retrace.datahub.catalog import INCIDENT_TAG
 from retrace.datahub.mcp_client import DataHubConnection
 
 _DATAHUB_ERRORS = (
@@ -65,14 +66,15 @@ class DataHubTools:
                 "document_type": "Analysis",
                 "title": title,
                 "content": content,
-                "topics": ["retrace-incident"],
+                "topics": [INCIDENT_TAG],
                 "related_assets": [asset_urn],
             },
         )
         if isinstance(doc, dict) and "error" in doc:
             return doc
         tagged = self._call(
-            "add_tags", {"tag_urns": ["urn:li:tag:retrace-incident"], "entity_urns": [asset_urn]}
+            "add_tags",
+            {"tag_urns": [f"urn:li:tag:{INCIDENT_TAG}"], "entity_urns": [asset_urn]},
         )
         urn = _document_urn(doc)
         if urn is None:

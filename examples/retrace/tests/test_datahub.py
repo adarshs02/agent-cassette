@@ -113,7 +113,7 @@ def test_tool_contract_reports_missing_tools_and_params():
     assert len(problems) == 3
 
 
-def test_live_rejects_server_with_wrong_contract(monkeypatch):
+def test_live_rejects_server_with_wrong_contract(monkeypatch, tmp_path):
     import contextlib
 
     import pytest
@@ -138,13 +138,13 @@ def test_live_rejects_server_with_wrong_contract(monkeypatch):
             return ListToolsResult(tools=[_tool("search", "query")])
 
     @contextlib.asynccontextmanager
-    async def fake_stdio(params):
+    async def fake_stdio(params, errlog=None):
         yield (None, None)
 
     monkeypatch.setattr("mcp.ClientSession", Session)
     monkeypatch.setattr("mcp.client.stdio.stdio_client", fake_stdio)
     with pytest.raises(mcp_client.DataHubUnavailable, match="missing tool save_document"):
-        mcp_client.DataHubConnection.live(Settings())
+        mcp_client.DataHubConnection.live(Settings(mcp_log_path=tmp_path / "mcp-server.log"))
 
 
 def test_server_env_is_an_allowlist(monkeypatch):
@@ -174,6 +174,29 @@ def test_server_env_is_an_allowlist(monkeypatch):
         "TOOLS_IS_MUTATION_ENABLED": "true",
     }
     assert "DATAHUB_GMS_TOKEN" not in _server_env(Settings())
+
+
+def test_server_errlog_opens_configured_path(tmp_path):
+    from retrace.config import Settings
+    from retrace.datahub.mcp_client import _server_errlog
+
+    log_path = tmp_path / "nested" / "mcp-server.log"
+    handle = _server_errlog(Settings(mcp_log_path=log_path))
+    try:
+        assert log_path.exists()
+        assert handle.mode == "a"
+        handle.write("hello\n")
+        handle.flush()
+        assert log_path.read_text() == "hello\n"
+    finally:
+        handle.close()
+
+
+def test_server_errlog_default_path_is_under_work_dir():
+    from retrace.config import DEFAULT_MCP_LOG_PATH, Settings
+
+    assert Settings().mcp_log_path == DEFAULT_MCP_LOG_PATH
+    assert DEFAULT_MCP_LOG_PATH.parts[-2:] == ("work", "mcp-server.log")
 
 
 class _SlowSession(FakeDataHubSession):
