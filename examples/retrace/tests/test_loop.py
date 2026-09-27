@@ -319,6 +319,9 @@ def test_claim_tool_descriptions_state_asset_format():
     from retrace.agent.prompts import TOOL_SCHEMAS
 
     by_name = {t["name"]: t for t in TOOL_SCHEMAS}
-    description = by_name["confirm_root_cause"]["description"]
-    assert "a table name or its DataHub URN" in description
-    assert "field: column name" in description
+    exact_format = (
+        " asset: schema-qualified table name (schema.table) or its DataHub URN; field: column name."
+    )
+    for name in ("confirm_root_cause", "escalate_upstream"):
+        description = by_name[name]["description"]
+        assert exact_format in description, f"Tool '{name}' missing exact format: {description}"

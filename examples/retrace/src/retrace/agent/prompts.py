@@ -103,7 +103,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         (
             "Confirm a root cause with cited evidence; use this (then propose_repair) whenever"
             " the true values can be reconstructed exactly."
-            " asset: a table name or its DataHub URN; field: column name."
+            " asset: schema-qualified table name (schema.table) or its DataHub URN;"
+            " field: column name."
         ),
         {
             "asset": _STR,
@@ -118,6 +119,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         (
             "Escalate upstream data that is lost, missing or stale and cannot be recovered"
             " exactly. No repair is allowed afterwards."
+            " asset: schema-qualified table name (schema.table) or its DataHub URN;"
+            " field: column name."
         ),
         {
             "asset": _STR,
