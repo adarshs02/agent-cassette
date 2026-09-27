@@ -6,9 +6,10 @@ import csv
 from retrace.agent.state import Claim, IncidentState, Stage
 from retrace.evals.graders import _claim_grades, _variant_verify
 from retrace.faults import get_fault
+from retrace.pipeline.build import build
 from retrace.pipeline.checks import failed_names, run_checks
-from retrace.pipeline.generate import generate
-from retrace.pipeline.workspace import prepare
+from retrace.pipeline.generate import generate, generate_frames, write_sources
+from retrace.pipeline.workspace import TRANSFORMS_DIR
 
 _HEURISTIC_PATCH = {
     "stg_orders": (
@@ -56,13 +57,22 @@ def test_variant_actually_rewrites_some_legacy_pos_rows(tmp_path):
             assert float(b["amount"]) == float(a["amount"])
 
 
-def test_healthy_control_with_variant_still_passes_all_checks_with_original_transforms(
-    tmp_path, baseline
-):
-    # control_healthy has no .variant of its own, so requesting variant=True is a
-    # safe no-op: the build must still be the ordinary healthy build.
-    ws = prepare(tmp_path / "ws", fault="control_healthy", variant=True)
-    assert failed_names(run_checks(ws.warehouse, baseline)) == []
+def test_variant_alone_still_passes_every_check_against_original_transforms(tmp_path, baseline):
+    # Apply unit_cents' variant with no fault injected at all: just the legacy_pos
+    # ".00" -> "40" reformat, run through the ORIGINAL (unpatched) transforms. Since
+    # the reformat doesn't change the value, every check should still be green.
+    frames = generate_frames()
+    before = [row["amount"] for row in frames.orders if row["payment_processor"] == "legacy_pos"]
+    get_fault("unit_cents").variant(frames)
+    after = [row["amount"] for row in frames.orders if row["payment_processor"] == "legacy_pos"]
+    changed = sum(1 for b, a in zip(before, after, strict=True) if b != a)
+    assert changed > 0, "variant must be non-vacuous: it should reformat some legacy_pos rows"
+
+    sources = tmp_path / "sources"
+    write_sources(frames, sources)
+    warehouse = tmp_path / "warehouse.duckdb"
+    build(sources, TRANSFORMS_DIR, warehouse)
+    assert failed_names(run_checks(warehouse, baseline)) == []
 
 
 def test_reference_patch_passes_the_variant_grade(tmp_path, baseline):

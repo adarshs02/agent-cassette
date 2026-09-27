@@ -21,6 +21,10 @@ class RepairRejected(ValueError):
 ATTRIBUTION_PREFIX = "-- Adapted from Project Blackbox"
 
 
+def _first_nonempty_line(text: str) -> str | None:
+    return next((line for line in text.splitlines() if line.strip()), None)
+
+
 @dataclass
 class RepairOutcome:
     passed: bool
@@ -81,12 +85,16 @@ class Repairer:
         """Deterministically restore a dropped Project Blackbox attribution line.
 
         If the transform being patched originally started with the attribution
-        comment and the model's replacement SQL doesn't carry that line forward,
-        prepend it. The repair is otherwise untouched.
+        comment and ``new_sql``'s own first *non-empty* line isn't that exact
+        line, prepend it. Checking the leading position (rather than a substring
+        search anywhere in the text) avoids being fooled by the header text
+        merely appearing later in the file, e.g. buried in a mid-file comment.
+        The repair is otherwise untouched.
         """
         original = (self.ws.transforms / f"{stem}.sql").read_text()
         first_line = original.splitlines()[0] if original else ""
-        if first_line.startswith(ATTRIBUTION_PREFIX) and first_line not in new_sql:
+        kept = _first_nonempty_line(new_sql) == first_line
+        if first_line.startswith(ATTRIBUTION_PREFIX) and not kept:
             return f"{first_line}\n{new_sql}"
         return new_sql
 

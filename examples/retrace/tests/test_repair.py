@@ -208,3 +208,24 @@ def test_propose_does_not_duplicate_an_already_present_header(tmp_path, baseline
     outcome = repairer.propose("stg_orders.sql", fix, "raw.raw_orders", accepted={})
     assert outcome.passed, outcome.failed_checks
     assert outcome.patched["stg_orders"].count(_ATTRIBUTION_HEADER) == 1
+
+
+def test_propose_prepends_header_even_when_it_only_appears_mid_file(tmp_path, baseline):
+    # The header text merely being present *somewhere* in the file (e.g. buried
+    # in a mid-file comment) must not be mistaken for it being kept: only the
+    # leading position counts.
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    full_fix = get_fault("unit_cents").reference_patch["stg_orders"]
+    fix_without_header = full_fix[len(_ATTRIBUTION_HEADER) + 1 :]
+    assert not fix_without_header.startswith(_ATTRIBUTION_HEADER)
+    buried = fix_without_header.replace(
+        "FROM raw.raw_orders", f"{_ATTRIBUTION_HEADER}\nFROM raw.raw_orders", 1
+    )
+    assert _ATTRIBUTION_HEADER in buried
+    assert not buried.startswith(_ATTRIBUTION_HEADER)
+    repairer = Repairer(ws, baseline, tmp_path / "scratch")
+    outcome = repairer.propose("stg_orders.sql", buried, "raw.raw_orders", accepted={})
+    assert outcome.passed, outcome.failed_checks
+    assert outcome.patched["stg_orders"].splitlines()[0] == _ATTRIBUTION_HEADER
+    # The buried mid-file copy is untouched; a second (leading) copy is expected.
+    assert outcome.patched["stg_orders"].count(_ATTRIBUTION_HEADER) == 2

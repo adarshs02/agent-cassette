@@ -67,6 +67,22 @@ def test_datahub_timeout_from_first_call_cannot_gather_lineage_and_ends_failed(t
     assert result.status == "passed", result.grades
 
 
+def test_datahub_timeout_live_then_replay(tmp_path):
+    kw = {"settings": Settings(), "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
+    base = run_scenario(get_scenario("unit_cents"), "live", ingest=False, **kw, **FACTORIES)
+    assert base.status == "passed", base.grades
+
+    live = run_scenario(get_scenario("datahub_timeout"), "live", ingest=False, **kw, **FACTORIES)
+    assert live.status == "passed", live.grades
+    assert live.final_stage == "FAILED", live.final_stage
+    assert (tmp_path / "c" / "datahub_timeout.jsonl").exists()
+
+    replay = run_scenario(get_scenario("datahub_timeout"), "replay", **kw)
+    assert replay.status == "passed", replay.grades
+    assert replay.final_stage == live.final_stage
+    assert replay.stats == live.stats
+
+
 def test_wrong_answer_is_graded_failed(tmp_path):
     kw = {"settings": Settings(), "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
     result = run_scenario(
