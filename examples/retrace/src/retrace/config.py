@@ -10,6 +10,7 @@ APP_ROOT = Path(__file__).resolve().parents[2]
 CASSETTE_DIR = APP_ROOT / "evals" / "cassettes"
 RESULTS_DIR = APP_ROOT / "evals" / "results"
 DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_MCP_LOG_PATH = APP_ROOT / "work" / "mcp-server.log"
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class Settings:
     max_repair_attempts: int = 3
     max_nudges: int = 2
     ingest_settle_s: float = 5.0
+    mcp_log_path: Path = DEFAULT_MCP_LOG_PATH
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -31,4 +33,5 @@ class Settings:
             datahub_gms_token=os.environ.get("DATAHUB_GMS_TOKEN") or None,
             mcp_server_spec=os.environ.get("RETRACE_MCP_SERVER", "mcp-server-datahub"),
             ingest_settle_s=float(os.environ.get("RETRACE_INGEST_SETTLE_S", "5.0")),
+            mcp_log_path=Path(os.environ.get("RETRACE_MCP_LOG", str(DEFAULT_MCP_LOG_PATH))),
         )

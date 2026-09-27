@@ -1,5 +1,5 @@
 from retrace import __version__
-from retrace.config import DEFAULT_MODEL, Settings
+from retrace.config import DEFAULT_MCP_LOG_PATH, DEFAULT_MODEL, Settings
 
 
 def test_version():
@@ -19,3 +19,11 @@ def test_settings_from_env(monkeypatch):
 
 def test_default_model():
     assert Settings().model == DEFAULT_MODEL == "claude-sonnet-5"
+
+
+def test_mcp_log_path_from_env(monkeypatch, tmp_path):
+    custom = tmp_path / "custom-mcp.log"
+    monkeypatch.setenv("RETRACE_MCP_LOG", str(custom))
+    assert Settings.from_env().mcp_log_path == custom
+    monkeypatch.delenv("RETRACE_MCP_LOG")
+    assert Settings.from_env().mcp_log_path == DEFAULT_MCP_LOG_PATH

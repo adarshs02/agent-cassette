@@ -8,7 +8,7 @@ import json
 import os
 import threading
 from collections.abc import Callable, Coroutine, Iterable
-from typing import Any
+from typing import Any, TextIO
 
 from agent_cassette import wrap_mcp
 from retrace.config import Settings
@@ -157,6 +157,39 @@ class _JSONResultSession:
         return dump(mode="json") if callable(dump) else result
 
 
+def _server_errlog(settings: Settings) -> TextIO:
+    """Open the file the DataHub MCP server's stderr is redirected to.
+
+    The server is chatty on stderr; routed here (append mode) instead of our
+    own stderr so its debug lines don't flood Retrace's terminal output.
+    """
+    path = settings.mcp_log_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return open(path, "a", encoding="utf-8")  # noqa: SIM115 - closed explicitly by the caller
+
+
+def _shutdown_server(
+    runner: LoopThread,
+    task: concurrent.futures.Future[Any],
+    stop_event: asyncio.Event,
+    errlog: TextIO,
+) -> None:
+    """Tear down the live() server thread, always closing the errlog handle.
+
+    ``runner.stop()`` can raise (e.g. the loop thread failing to join); the
+    errlog file descriptor must still be closed so it isn't leaked.
+    """
+    runner.loop.call_soon_threadsafe(stop_event.set)
+    try:
+        task.result(timeout=10)
+    except Exception:
+        pass
+    try:
+        runner.stop()
+    finally:
+        errlog.close()
+
+
 def _server_env(settings: Settings) -> dict[str, str]:
     """An allowlisted environment for the MCP server: never pass model credentials."""
     env = {
@@ -228,11 +261,12 @@ class DataHubConnection:
         params = StdioServerParameters(
             command="uvx", args=[settings.mcp_server_spec], env=_server_env(settings)
         )
+        errlog = _server_errlog(settings)
 
         async def serve() -> None:
             holder["stop"] = asyncio.Event()
             try:
-                async with stdio_client(params) as (read, write):
+                async with stdio_client(params, errlog=errlog) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
                         problems = check_tool_contract(await _list_all_tools(session))
@@ -252,18 +286,16 @@ class DataHubConnection:
         try:
             session = ready.result(timeout=120)
         except Exception as error:
-            runner.stop()
+            try:
+                runner.stop()
+            finally:
+                errlog.close()
             raise DataHubUnavailable(
                 f"could not start {settings.mcp_server_spec}: {error}"
             ) from error
 
         def shutdown() -> None:
-            runner.loop.call_soon_threadsafe(holder["stop"].set)
-            try:
-                task.result(timeout=10)
-            except Exception:
-                pass
-            runner.stop()
+            _shutdown_server(runner, task, holder["stop"], errlog)
 
         return cls._wrap(runner, session, shutdown, cassette, timeout)
 

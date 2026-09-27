@@ -59,6 +59,27 @@ def test_every_table_gets_global_tags(healthy_ws):
         assert tags[dataset_urn(table)] == expected
 
 
+def test_tag_entities_are_created_before_dataset_proposals(healthy_ws):
+    from retrace.datahub.catalog import INCIDENT_TAG
+
+    proposals = build_proposals(healthy_ws.warehouse)
+    tag_props = {
+        p.entityUrn: p.aspect for p in proposals if type(p.aspect).__name__ == "TagPropertiesClass"
+    }
+    for tag in (INCIDENT_TAG, "kpi", "executive-reporting", "revenue"):
+        urn = f"urn:li:tag:{tag}"
+        assert urn in tag_props
+        assert tag_props[urn].name == tag
+
+    first_dataset_index = next(
+        i for i, p in enumerate(proposals) if type(p.aspect).__name__ == "DatasetPropertiesClass"
+    )
+    tag_indices = [
+        i for i, p in enumerate(proposals) if type(p.aspect).__name__ == "TagPropertiesClass"
+    ]
+    assert tag_indices and all(i < first_dataset_index for i in tag_indices)
+
+
 def test_soft_delete_emits_status_removed(monkeypatch):
     from retrace.config import Settings
     from retrace.datahub import ingest
