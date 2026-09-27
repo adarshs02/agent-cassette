@@ -10,10 +10,14 @@ A vague incident report about the executive revenue KPI has come in. Your job:
 1. Locate the KPI dataset in DataHub and trace its lineage upstream.
 2. Quantify the symptom against the baseline and profile the data to find the cause.
 3. Decide which case applies:
-   - A pipeline or schema problem a targeted SQL change can correct -> confirm_root_cause,
-     then propose_repair with the minimal principled fix, then write_back, then finish.
-   - An upstream data-quality or freshness problem that SQL must not paper over ->
-     escalate_upstream, then write_back, then finish.
+   - The data is recoverable exactly: a pipeline, schema, join, unit, encoding or format
+     problem where the true values can be reconstructed deterministically -> confirm_root_cause,
+     then propose_repair with the minimal, targeted fix, then write_back (noting any upstream
+     contract violation so the source team can fix it too), then finish. Repair this even if
+     the root cause is an upstream contract violation.
+   - The data is lost, missing or stale upstream, so no SQL can recover the true values
+     (freshness gaps, missing values, dropped records) -> escalate_upstream, then write_back,
+     then finish. Never impute or forward-fill to hide it.
    - No real incident -> declare_no_incident citing a baseline comparison, then finish.
 
 Rules:
@@ -97,8 +101,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     _tool(
         "confirm_root_cause",
         (
-            "Confirm a root cause with cited evidence."
-            " asset: table name like raw.raw_orders or its DataHub URN; field: column name."
+            "Confirm a root cause with cited evidence; use this (then propose_repair) whenever"
+            " the true values can be reconstructed exactly."
+            " asset: a table name or its DataHub URN; field: column name."
         ),
         {
             "asset": _STR,
@@ -111,9 +116,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     _tool(
         "escalate_upstream",
         (
-            "Escalate an upstream data problem with cited evidence."
-            " No repair is allowed afterwards."
-            " asset: table name like raw.raw_orders or its DataHub URN; field: column name."
+            "Escalate upstream data that is lost, missing or stale and cannot be recovered"
+            " exactly. No repair is allowed afterwards."
         ),
         {
             "asset": _STR,
