@@ -24,6 +24,8 @@ Rules:
 - Every fact tool returns an evidence_id. Workflow tools require you to cite them.
 - A root cause or escalation must cite at least one DataHub item and one warehouse item,
   and the asset must appear in DataHub lineage evidence you collected.
+- The root-cause asset is the most upstream table where the bad data or defect
+  originates, not the table or file you patch; name the column where it shows up as the field.
 - Repairs are verified by the full invariant suite. Checks on raw tables cannot be fixed
   by SQL; if they fail, the problem is upstream.
 - Never blanket-rewrite history. Keep fixes scoped to the affected rows.
@@ -104,6 +106,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "Confirm a root cause with cited evidence; use this (then propose_repair) whenever"
             " the true values can be reconstructed exactly."
             " Can be called again to revise the root cause before a repair passes."
+            " The asset is the most upstream table where the bad data or defect originates,"
+            " not the file you patch."
             " asset: schema-qualified table name (schema.table) or its DataHub URN;"
             " field: column name."
         ),
@@ -120,6 +124,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         (
             "Escalate upstream data that is lost, missing or stale and cannot be recovered"
             " exactly. No repair is allowed afterwards."
+            " The asset is the most upstream table where the bad data or defect originates,"
+            " not the file you patch."
             " asset: schema-qualified table name (schema.table) or its DataHub URN;"
             " field: column name."
         ),
