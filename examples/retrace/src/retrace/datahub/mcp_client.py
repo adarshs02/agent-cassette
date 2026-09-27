@@ -168,6 +168,28 @@ def _server_errlog(settings: Settings) -> TextIO:
     return open(path, "a", encoding="utf-8")  # noqa: SIM115 - closed explicitly by the caller
 
 
+def _shutdown_server(
+    runner: LoopThread,
+    task: concurrent.futures.Future[Any],
+    stop_event: asyncio.Event,
+    errlog: TextIO,
+) -> None:
+    """Tear down the live() server thread, always closing the errlog handle.
+
+    ``runner.stop()`` can raise (e.g. the loop thread failing to join); the
+    errlog file descriptor must still be closed so it isn't leaked.
+    """
+    runner.loop.call_soon_threadsafe(stop_event.set)
+    try:
+        task.result(timeout=10)
+    except Exception:
+        pass
+    try:
+        runner.stop()
+    finally:
+        errlog.close()
+
+
 def _server_env(settings: Settings) -> dict[str, str]:
     """An allowlisted environment for the MCP server: never pass model credentials."""
     env = {
@@ -264,20 +286,16 @@ class DataHubConnection:
         try:
             session = ready.result(timeout=120)
         except Exception as error:
-            runner.stop()
-            errlog.close()
+            try:
+                runner.stop()
+            finally:
+                errlog.close()
             raise DataHubUnavailable(
                 f"could not start {settings.mcp_server_spec}: {error}"
             ) from error
 
         def shutdown() -> None:
-            runner.loop.call_soon_threadsafe(holder["stop"].set)
-            try:
-                task.result(timeout=10)
-            except Exception:
-                pass
-            runner.stop()
-            errlog.close()
+            _shutdown_server(runner, task, holder["stop"], errlog)
 
         return cls._wrap(runner, session, shutdown, cassette, timeout)
 

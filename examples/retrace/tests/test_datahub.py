@@ -199,6 +199,36 @@ def test_server_errlog_default_path_is_under_work_dir():
     assert DEFAULT_MCP_LOG_PATH.parts[-2:] == ("work", "mcp-server.log")
 
 
+def test_shutdown_server_closes_errlog_even_if_runner_stop_raises(tmp_path):
+    import asyncio
+    import concurrent.futures
+
+    import pytest
+    from retrace.datahub.mcp_client import _shutdown_server
+
+    class FakeLoop:
+        def call_soon_threadsafe(self, callback):
+            callback()
+
+    class FakeRunner:
+        def __init__(self):
+            self.loop = FakeLoop()
+
+        def stop(self):
+            raise RuntimeError("loop thread would not join")
+
+    stop_event = asyncio.Event()
+    task: concurrent.futures.Future[None] = concurrent.futures.Future()
+    task.set_result(None)
+    errlog = open(tmp_path / "mcp-server.log", "a")
+
+    with pytest.raises(RuntimeError, match="loop thread would not join"):
+        _shutdown_server(FakeRunner(), task, stop_event, errlog)
+
+    assert stop_event.is_set()
+    assert errlog.closed
+
+
 class _SlowSession(FakeDataHubSession):
     async def call_tool(self, name, arguments=None):
         import asyncio
