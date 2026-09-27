@@ -172,3 +172,39 @@ def test_unparseable_patch_is_rejected_with_detail(tmp_path, baseline):
     )
     assert not outcome.passed
     assert outcome.error.startswith("stg_orders.sql must be a single CREATE")
+
+
+_ATTRIBUTION_HEADER = (
+    "-- Adapted from Project Blackbox "
+    "(https://github.com/alejandro-publius/blackbox-datahub), "
+    "Apache-2.0. Modified for Retrace."
+)
+
+
+def test_propose_restores_a_dropped_attribution_header(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    full_fix = get_fault("unit_cents").reference_patch["stg_orders"]
+    assert full_fix.startswith(_ATTRIBUTION_HEADER)
+    # Simulate a model that dropped stg_orders.sql's original attribution line.
+    fix_without_header = full_fix[len(_ATTRIBUTION_HEADER) + 1 :]
+    assert _ATTRIBUTION_HEADER not in fix_without_header
+    repairer = Repairer(ws, baseline, tmp_path / "scratch")
+    outcome = repairer.propose("stg_orders.sql", fix_without_header, "raw.raw_orders", accepted={})
+    assert outcome.passed, outcome.failed_checks
+    assert outcome.patched["stg_orders"].splitlines()[0] == _ATTRIBUTION_HEADER
+    # The diff must not show the header being removed.
+    removed_lines = [
+        line
+        for line in outcome.diff.splitlines(keepends=True)
+        if line.startswith("-") and not line.startswith("---")
+    ]
+    assert not any(_ATTRIBUTION_HEADER in line for line in removed_lines)
+
+
+def test_propose_does_not_duplicate_an_already_present_header(tmp_path, baseline):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    fix = get_fault("unit_cents").reference_patch["stg_orders"]  # already carries the header
+    repairer = Repairer(ws, baseline, tmp_path / "scratch")
+    outcome = repairer.propose("stg_orders.sql", fix, "raw.raw_orders", accepted={})
+    assert outcome.passed, outcome.failed_checks
+    assert outcome.patched["stg_orders"].count(_ATTRIBUTION_HEADER) == 1

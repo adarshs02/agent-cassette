@@ -18,6 +18,9 @@ class RepairRejected(ValueError):
     """The proposed repair target is not allowed."""
 
 
+ATTRIBUTION_PREFIX = "-- Adapted from Project Blackbox"
+
+
 @dataclass
 class RepairOutcome:
     passed: bool
@@ -74,6 +77,19 @@ class Repairer:
         self.scratch_root = scratch_root
         self.attempts = 0
 
+    def _keep_attribution_header(self, stem: str, new_sql: str) -> str:
+        """Deterministically restore a dropped Project Blackbox attribution line.
+
+        If the transform being patched originally started with the attribution
+        comment and the model's replacement SQL doesn't carry that line forward,
+        prepend it. The repair is otherwise untouched.
+        """
+        original = (self.ws.transforms / f"{stem}.sql").read_text()
+        first_line = original.splitlines()[0] if original else ""
+        if first_line.startswith(ATTRIBUTION_PREFIX) and first_line not in new_sql:
+            return f"{first_line}\n{new_sql}"
+        return new_sql
+
     def propose(
         self, file: str, new_sql: str, root_asset: str, accepted: dict[str, str]
     ) -> RepairOutcome:
@@ -85,6 +101,7 @@ class Repairer:
                 f"{stem}.sql is not downstream of {table_name(root_asset)}; "
                 f"allowed: {sorted(allowed)}"
             )
+        new_sql = self._keep_attribution_header(stem, new_sql)
         self.attempts += 1
         scratch = self.scratch_root / f"attempt_{self.attempts}"
         if scratch.exists():
