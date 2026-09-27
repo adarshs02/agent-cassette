@@ -183,12 +183,25 @@ class ToolExecutor:
         check_claim_evidence(self.store, asset, evidence_ids)
         return Claim(table_name(asset), field, summary, list(evidence_ids))
 
+    _ROOT_CAUSE_LOCKED_STAGES = frozenset(
+        {Stage.VERIFIED, Stage.WRITTEN_BACK, Stage.ESCALATED, Stage.NO_INCIDENT, Stage.FAILED}
+    )
+
     def t_confirm_root_cause(
         self, asset: str, summary: str, evidence_ids: list[str], field: str | None = None
     ) -> dict[str, Any]:
-        if self.state.root_cause is not None:
-            raise GateError("root cause already confirmed")
+        # A root cause may be revised (while ROOT_CAUSE_CONFIRMED or REPAIRING) as
+        # long as no repair has passed yet. Once a repair passes (state.patched is
+        # non-empty) or the run has moved to a terminal/verified stage, it is locked.
+        if self.state.patched:
+            raise GateError("root cause already confirmed and repaired")
+        if self.state.stage in self._ROOT_CAUSE_LOCKED_STAGES:
+            raise GateError(f"cannot confirm a root cause in stage {self.state.stage.value}")
+        revising = self.state.root_cause is not None
         claim = self._claim(asset, field, summary, evidence_ids)
+        if revising:
+            self.state.root_cause = claim
+            return {"accepted": True, "revised": True, "stage": self.state.stage.value}
         advance(self.state, Stage.ROOT_CAUSE_CONFIRMED)
         self.state.root_cause = claim
         return {"accepted": True, "stage": self.state.stage.value}

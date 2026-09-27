@@ -8,10 +8,11 @@ from pathlib import Path
 import sqlglot
 from sqlglot import exp
 
-from retrace.pipeline.build import OUTPUT_TABLES, TRANSFORM_ORDER
+from retrace.pipeline.build import OUTPUT_TABLES, TABLE_PRODUCERS, TRANSFORM_ORDER
 from retrace.pipeline.workspace import TRANSFORMS_DIR
 
-# OUTPUT_TABLES lives in build.py (build validates transforms against it); re-exported here.
+# OUTPUT_TABLES and TABLE_PRODUCERS live in build.py (build validates transforms
+# against OUTPUT_TABLES); both are re-exported here.
 _URN = re.compile(r"urn:li:dataset:\(urn:li:dataPlatform:[^,]+,([^,]+),[^)]+\)")
 
 
@@ -37,12 +38,11 @@ def direct_dependencies(transforms_dir: Path = TRANSFORMS_DIR) -> dict[str, set[
 
 def dependency_closure(transforms_dir: Path = TRANSFORMS_DIR) -> dict[str, set[str]]:
     direct = direct_dependencies(transforms_dir)
-    producer = {table: name for name, table in OUTPUT_TABLES.items()}
     closure: dict[str, set[str]] = {}
     for name in TRANSFORM_ORDER:
         acc = set(direct[name])
         for table in direct[name]:
-            if table in producer:
-                acc |= closure[producer[table]]
+            if table in TABLE_PRODUCERS:
+                acc |= closure[TABLE_PRODUCERS[table]]
         closure[name] = acc
     return closure

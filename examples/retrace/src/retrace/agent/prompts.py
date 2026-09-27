@@ -103,6 +103,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         (
             "Confirm a root cause with cited evidence; use this (then propose_repair) whenever"
             " the true values can be reconstructed exactly."
+            " Can be called again to revise the root cause before a repair passes."
             " asset: schema-qualified table name (schema.table) or its DataHub URN;"
             " field: column name."
         ),

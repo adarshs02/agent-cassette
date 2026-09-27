@@ -25,6 +25,10 @@ OUTPUT_TABLES: dict[str, str] = {
     "exec_metric": "marts.exec_metric",
 }
 
+# Inverse of OUTPUT_TABLES: the transform that produces a given table, if any.
+# lineage.py re-exports this too.
+TABLE_PRODUCERS: dict[str, str] = {table: name for name, table in OUTPUT_TABLES.items()}
+
 
 class BuildError(RuntimeError):
     """A transform failed to execute."""

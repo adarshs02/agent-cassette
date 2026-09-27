@@ -95,6 +95,20 @@ def test_system_prompt_and_tools_are_generic():
                 )
 
 
+def test_confirm_root_cause_description_mentions_revision_and_keeps_asset_guidance():
+    """The description must document revision support and keep the asset-format sentence."""
+    from retrace.agent.prompts import TOOL_SCHEMAS
+
+    tool = next(t for t in TOOL_SCHEMAS if t["name"] == "confirm_root_cause")
+    assert (
+        "Can be called again to revise the root cause before a repair passes."
+        in tool["description"]
+    )
+    assert tool["description"].endswith(
+        "asset: schema-qualified table name (schema.table) or its DataHub URN; field: column name."
+    )
+
+
 def test_system_prompt_lines_are_readable():
     """Verify all SYSTEM_PROMPT lines fit within 100 character limit."""
     from retrace.agent.prompts import SYSTEM_PROMPT
