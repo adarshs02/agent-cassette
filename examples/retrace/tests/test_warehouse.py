@@ -1,3 +1,4 @@
+import duckdb
 import pytest
 from retrace.tools import warehouse as wh
 from retrace.tools.warehouse import SqlRejected, SqlTimeout, Warehouse
@@ -8,11 +9,80 @@ def tools(healthy_ws, baseline):
     return Warehouse(healthy_ws.warehouse, baseline)
 
 
+def _reference_rows(warehouse_path, sql: str) -> list[list]:
+    """Run `sql` directly against the warehouse (bypassing run_sql/its
+    rewrite entirely) to compute an expected result from an explicit,
+    fully-disambiguating ORDER BY."""
+    con = duckdb.connect(str(warehouse_path), read_only=True)
+    try:
+        rows = con.execute(sql).fetchall()
+    finally:
+        con.close()
+    return [list(row) for row in rows]
+
+
 def test_run_sql_returns_json_rows(tools):
     out = tools.run_sql("SELECT day, revenue_usd FROM marts.fct_revenue ORDER BY day LIMIT 2")
     assert out["columns"] == ["day", "revenue_usd"]
     assert out["row_count"] == 2
     assert isinstance(out["rows"][0][0], str)
+
+
+def test_run_sql_tie_plus_limit_is_deterministic(tools, healthy_ws):
+    # raw_fx_rates has 4 currencies tied on every rate_day, so ORDER BY
+    # rate_day DESC LIMIT 6 cuts mid-tie: DuckDB gives no guarantee about
+    # which of the tied rows come back, and that choice can differ across
+    # platforms/thread counts. Compute the expected rows with an explicit,
+    # fully-disambiguating ORDER BY (ties broken by currency ascending).
+    expected = _reference_rows(
+        healthy_ws.warehouse,
+        "SELECT currency, rate_day FROM raw.raw_fx_rates "
+        "ORDER BY rate_day DESC, currency ASC LIMIT 6",
+    )
+    out = tools.run_sql(
+        "SELECT currency, rate_day FROM raw.raw_fx_rates ORDER BY rate_day DESC LIMIT 6"
+    )
+    assert out["rows"] == expected
+    # The model's own DESC direction on rate_day must survive the rewrite.
+    days = [row[1] for row in out["rows"]]
+    assert days == sorted(days, reverse=True)
+
+
+def test_run_sql_distinct_no_order_by_is_sorted(tools, healthy_ws):
+    # No ORDER BY at all: DuckDB doesn't promise any particular row order.
+    # NULLS LAST matches DuckDB's default for an ascending ordinal.
+    expected = _reference_rows(
+        healthy_ws.warehouse, "SELECT DISTINCT currency FROM raw.raw_orders ORDER BY 1"
+    )
+    out = tools.run_sql("SELECT DISTINCT currency FROM raw.raw_orders")
+    assert out["rows"] == expected
+
+
+def test_run_sql_union_is_deterministic(tools, healthy_ws):
+    query = "SELECT currency FROM raw.raw_fx_rates UNION SELECT currency FROM raw.raw_orders"
+    expected = _reference_rows(healthy_ws.warehouse, query + " ORDER BY 1")
+    first = tools.run_sql(query)
+    second = tools.run_sql(query)
+    assert first["rows"] == expected
+    assert first["rows"] == second["rows"]
+
+
+def test_run_sql_with_cte_order_by_desc_limit_is_deterministic(tools, healthy_ws):
+    query = (
+        "WITH recent AS (SELECT currency, rate_day FROM raw.raw_fx_rates) "
+        "SELECT currency, rate_day FROM recent ORDER BY rate_day DESC LIMIT 6"
+    )
+    expected = _reference_rows(
+        healthy_ws.warehouse,
+        "WITH recent AS (SELECT currency, rate_day FROM raw.raw_fx_rates) "
+        "SELECT currency, rate_day FROM recent ORDER BY rate_day DESC, currency ASC LIMIT 6",
+    )
+    first = tools.run_sql(query)
+    second = tools.run_sql(query)
+    assert first["rows"] == expected
+    assert first["rows"] == second["rows"]
+    days = [row[1] for row in first["rows"]]
+    assert days == sorted(days, reverse=True)
 
 
 @pytest.mark.parametrize(
