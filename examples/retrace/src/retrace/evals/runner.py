@@ -281,16 +281,33 @@ def run_eval(
             if trial > 0:
                 result.scenario = f"{scenario.name}#t{trial + 1}"
             results.append(result)
-    if mode == "live" and not names:
-        cassette_dir.mkdir(parents=True, exist_ok=True)
-        errored = {r.scenario for r in results if r.status == "error"}
-        recorded = sorted(p.stem for p in cassette_dir.glob("*.jsonl") if p.stem not in errored)
-        # Trial-1 results carry the scenario's plain name (trials 2+ are suffixed
-        # "#tN"), so this naturally picks out each recorded scenario's trial-1 status.
-        expected = {
-            name: next(r.status for r in results if r.scenario == name) for name in recorded
-        }
-        (cassette_dir / MANIFEST).write_text(
-            json.dumps({"scenarios": recorded, "expected": expected}, indent=2) + "\n"
-        )
+    if mode == "live":
+        _update_manifest(cassette_dir, results)
     return results
+
+
+def _update_manifest(cassette_dir: Path, results: list[ScenarioResult]) -> None:
+    """Keep MANIFEST.json in sync with a live run, scoped or full.
+
+    Loads the existing manifest (if any) and overwrites "expected"[name] for each
+    scenario *this run* recorded (trial-1 status; trials 2+ are suffixed "#tN" and
+    skipped, and an errored trial-1 already deleted its own cassette, so it's
+    skipped too). "scenarios" is recomputed from the cassettes that actually exist
+    on disk, and any "expected" entry whose cassette is gone -- including an
+    orphan cassette with no prior entry -- is dropped rather than guessed at.
+    """
+    cassette_dir.mkdir(parents=True, exist_ok=True)
+    existing = load_manifest(cassette_dir) or {}
+    expected = dict(existing.get("expected", {}))
+    for result in results:
+        if "#t" in result.scenario or result.status == "error":
+            continue
+        expected[result.scenario] = result.status
+    scenarios = sorted(p.stem for p in cassette_dir.glob("*.jsonl"))
+    for name in scenarios:
+        if name not in expected:
+            print(f"WARNING: {name}.jsonl has no recorded expected status", file=sys.stderr)
+    expected = {name: status for name, status in expected.items() if name in scenarios}
+    (cassette_dir / MANIFEST).write_text(
+        json.dumps({"scenarios": scenarios, "expected": expected}, indent=2) + "\n"
+    )

@@ -266,6 +266,47 @@ def test_errored_live_scenario_drops_cassette_and_manifest_entry(tmp_path, monke
     assert manifest["expected"] == {"unit_cents": "passed"}
 
 
+def test_full_live_run_writes_expected_for_all_recorded_scenarios(tmp_path, monkeypatch):
+    from retrace.evals import runner
+
+    monkeypatch.setattr(
+        runner, "SCENARIOS", [get_scenario("unit_cents"), get_scenario("bad_repair_rejected")]
+    )
+    kw = {"settings": Settings(), "cassette_dir": tmp_path / "c", "work_root": tmp_path / "w"}
+    run_eval("live", None, ingest=False, **kw, **FACTORIES)
+    manifest = json.loads((tmp_path / "c" / MANIFEST).read_text())
+    # The gate never writes a cassette, so a full run's manifest only ever
+    # carries scenarios that actually recorded one.
+    assert manifest["scenarios"] == ["unit_cents"]
+    assert manifest["expected"] == {"unit_cents": "passed"}
+
+
+def test_scoped_live_run_updates_only_its_entry_and_preserves_the_rest(tmp_path):
+    cassettes = tmp_path / "c"
+    cassettes.mkdir()
+    (cassettes / "control_healthy.jsonl").write_text("")
+    (cassettes / MANIFEST).write_text(
+        json.dumps({"scenarios": ["control_healthy"], "expected": {"control_healthy": "passed"}})
+    )
+    kw = {"settings": Settings(), "cassette_dir": cassettes, "work_root": tmp_path / "w"}
+    run_eval("live", ["unit_cents"], ingest=False, **kw, **FACTORIES)
+    manifest = json.loads((cassettes / MANIFEST).read_text())
+    assert manifest["expected"] == {"control_healthy": "passed", "unit_cents": "passed"}
+    assert set(manifest["scenarios"]) == {"control_healthy", "unit_cents"}
+
+
+def test_orphan_cassette_does_not_crash_and_is_left_out_of_expected(tmp_path, capsys):
+    cassettes = tmp_path / "c"
+    cassettes.mkdir()
+    (cassettes / "join_fanout.jsonl").write_text("")  # orphan: no prior manifest entry
+    kw = {"settings": Settings(), "cassette_dir": cassettes, "work_root": tmp_path / "w"}
+    run_eval("live", ["unit_cents"], ingest=False, **kw, **FACTORIES)
+    manifest = json.loads((cassettes / MANIFEST).read_text())
+    assert set(manifest["scenarios"]) == {"join_fanout", "unit_cents"}
+    assert manifest["expected"] == {"unit_cents": "passed"}
+    assert "join_fanout" in capsys.readouterr().err
+
+
 def test_compare_to_manifest_reports_no_mismatch_when_status_matches():
     results = [ScenarioResult("unit_cents", "passed"), ScenarioResult("tz_shift", "failed")]
     manifest = {
