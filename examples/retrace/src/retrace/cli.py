@@ -22,7 +22,7 @@ def _settings(args: argparse.Namespace) -> Settings:
 
 
 def _eval(args: argparse.Namespace) -> int:
-    from retrace.evals.runner import run_eval
+    from retrace.evals.runner import compare_to_manifest, load_manifest, run_eval
     from retrace.evals.scenarios import get_scenario
     from retrace.evals.scorecard import write_results
 
@@ -45,13 +45,25 @@ def _eval(args: argparse.Namespace) -> int:
         work_root=WORK_ROOT,
         trials=args.trials,
     )
+    manifest = load_manifest(CASSETTE_DIR) if mode == "replay" else None
     # Replay scorecards are local scratch; only live runs update the committed results.
     results_dir = RESULTS_DIR if mode == "live" else RESULTS_DIR / "replay"
-    path = write_results(results, mode, results_dir)
+    path = write_results(results, mode, results_dir, manifest=manifest)
     print(path.read_text())
     skipped = [r.scenario for r in results if r.status == "skipped"]
     if skipped:
         print(f"WARNING: skipped (no cassette yet): {skipped}", file=sys.stderr)
+
+    if mode == "replay" and manifest is not None and "expected" in manifest:
+        # CI replay gate: a recording is a regression check that outcomes MATCH
+        # THE RECORDING, not that everything passed. A recorded failure that
+        # replays as the same failure is fine; a status that diverges, or any
+        # replay that errors outright, is not.
+        mismatches = compare_to_manifest(results, manifest)
+        for line in mismatches:
+            print(f"MISMATCH: {line}")
+        has_errors = any(r.status == "error" for r in results)
+        return 0 if not mismatches and not has_errors else 1
     return 0 if all(r.status in ("passed", "skipped") for r in results) else 1
 
 

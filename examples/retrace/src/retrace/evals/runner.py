@@ -83,9 +83,29 @@ def _cleanup_live(state: IncidentState, settings: Settings) -> None:
         print(f"WARNING: could not soft-delete {state.writeback_urns}: {error}", file=sys.stderr)
 
 
-def _manifest(cassette_dir: Path) -> list[str] | None:
+def load_manifest(cassette_dir: Path) -> dict[str, Any] | None:
+    """Load the full cassette manifest (scenario list + expected recorded statuses)."""
     path = cassette_dir / MANIFEST
-    return json.loads(path.read_text())["scenarios"] if path.exists() else None
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def _manifest(cassette_dir: Path) -> list[str] | None:
+    manifest = load_manifest(cassette_dir)
+    return manifest["scenarios"] if manifest is not None else None
+
+
+def compare_to_manifest(results: list[ScenarioResult], manifest: dict[str, Any]) -> list[str]:
+    """Compare replayed statuses against manifest["expected"] (each scenario's recorded,
+    trial-1 status). Returns one description per mismatch; a scenario absent from
+    "expected" (an old manifest, or a scenario recorded without one) is not reported.
+    """
+    expected = manifest.get("expected", {})
+    mismatches = []
+    for result in results:
+        want = expected.get(result.scenario)
+        if want is not None and result.status != want:
+            mismatches.append(f"{result.scenario}: recorded {want}, replayed as {result.status}")
+    return mismatches
 
 
 def run_scenario(
@@ -265,5 +285,12 @@ def run_eval(
         cassette_dir.mkdir(parents=True, exist_ok=True)
         errored = {r.scenario for r in results if r.status == "error"}
         recorded = sorted(p.stem for p in cassette_dir.glob("*.jsonl") if p.stem not in errored)
-        (cassette_dir / MANIFEST).write_text(json.dumps({"scenarios": recorded}, indent=2) + "\n")
+        # Trial-1 results carry the scenario's plain name (trials 2+ are suffixed
+        # "#tN"), so this naturally picks out each recorded scenario's trial-1 status.
+        expected = {
+            name: next(r.status for r in results if r.scenario == name) for name in recorded
+        }
+        (cassette_dir / MANIFEST).write_text(
+            json.dumps({"scenarios": recorded, "expected": expected}, indent=2) + "\n"
+        )
     return results

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from retrace.evals.runner import ScenarioResult
 
@@ -33,7 +34,23 @@ def _table_cell(text: str, limit: int = 120) -> str:
     return first_line.replace("|", "\\|")[:limit]
 
 
-def write_results(results: list[ScenarioResult], mode: str, results_dir: Path) -> Path:
+def _match_column(results: list[ScenarioResult], expected: dict[str, str]) -> dict[str, str]:
+    """Per-scenario "yes"/"no"/"—" against manifest["expected"] (recorded trial-1 status)."""
+    column = {}
+    for r in results:
+        if r.scenario not in expected:
+            column[r.scenario] = "—"  # em dash: no recorded expectation to compare
+        else:
+            column[r.scenario] = "yes" if r.status == expected[r.scenario] else "no"
+    return column
+
+
+def write_results(
+    results: list[ScenarioResult],
+    mode: str,
+    results_dir: Path,
+    manifest: dict[str, Any] | None = None,
+) -> Path:
     results_dir.mkdir(parents=True, exist_ok=True)
     run = _next_run(results_dir)
     (results_dir / f"run_{run:04d}.json").write_text(
@@ -43,6 +60,7 @@ def write_results(results: list[ScenarioResult], mode: str, results_dir: Path) -
     faults_ok = sum(1 for f in FAULTS if by_name.get(f) and by_name[f].status == "passed")
     controls_fp = sum(1 for c in CONTROLS if by_name.get(c) and by_name[c].status == "failed")
     not_graded = [r.scenario for r in results if r.status in ("skipped", "error")]
+    expected = (manifest or {}).get("expected") if mode == "replay" else None
     lines = [
         f"# Retrace eval — {mode} (run {run})",
         "",
@@ -51,19 +69,34 @@ def write_results(results: list[ScenarioResult], mode: str, results_dir: Path) -
         f"- Not graded (skipped/error): {', '.join(not_graded) if not_graded else 'none'}",
         f"- Total wall time: {sum(r.wall_s for r in results):.1f}s",
         f"- Cost: {_cost(results)}",
-        "",
-        "| scenario | status | stage | failed grades | turns | tool calls | tokens in | "
-        "tokens out | wall s |",
-        "|---|---|---|---|---|---|---|---|---|",
     ]
+    match_column: dict[str, str] = {}
+    if expected is not None:
+        match_column = _match_column(results, expected)
+        comparable = [v for v in match_column.values() if v != "—"]
+        matched = sum(1 for v in comparable if v == "yes")
+        lines.append(f"- Matches recording: {matched}/{len(comparable)}")
+    lines.append("")
+    header = (
+        "| scenario | status | stage | failed grades | turns | tool calls | tokens in | "
+        "tokens out | wall s |"
+    )
+    separator = "|---|---|---|---|---|---|---|---|---|"
+    if expected is not None:
+        header += " matches recording |"
+        separator += "---|"
+    lines += [header, separator]
     for r in results:
         failed = ", ".join(g.name for g in r.grades if not g.passed) or (r.error or "")
-        lines.append(
+        row = (
             f"| {r.scenario} | {r.status} | {r.final_stage or ''} | {_table_cell(failed)} | "
             f"{r.stats.get('turns', '')} | {r.stats.get('tool_calls', '')} | "
             f"{r.stats.get('input_tokens', '')} | {r.stats.get('output_tokens', '')} | "
             f"{r.wall_s} |"
         )
+        if expected is not None:
+            row += f" {match_column[r.scenario]} |"
+        lines.append(row)
     errored = [r for r in results if r.status == "error" and r.error]
     if errored:
         lines += ["", "## Errors", ""]

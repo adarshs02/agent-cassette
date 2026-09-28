@@ -3,7 +3,13 @@ import json
 from retrace.config import Settings
 from retrace.datahub.fake import FakeDataHubSession
 from retrace.datahub.mcp_client import DataHubConnection
-from retrace.evals.runner import MANIFEST, ScenarioResult, run_eval, run_scenario
+from retrace.evals.runner import (
+    MANIFEST,
+    ScenarioResult,
+    compare_to_manifest,
+    run_eval,
+    run_scenario,
+)
 from retrace.evals.scenarios import SCENARIOS, get_scenario
 from retrace.evals.scorecard import write_results
 from retrace.testing import ScriptedModel, unit_cents_script
@@ -255,8 +261,40 @@ def test_errored_live_scenario_drops_cassette_and_manifest_entry(tmp_path, monke
     assert status["schema_rename"] == "error"
     assert not (cassettes / "schema_rename.jsonl").exists()
     assert (cassettes / "unit_cents.jsonl").exists()
-    manifest = json.loads((cassettes / MANIFEST).read_text())["scenarios"]
-    assert "schema_rename" not in manifest and "unit_cents" in manifest
+    manifest = json.loads((cassettes / MANIFEST).read_text())
+    assert "schema_rename" not in manifest["scenarios"] and "unit_cents" in manifest["scenarios"]
+    assert manifest["expected"] == {"unit_cents": "passed"}
+
+
+def test_compare_to_manifest_reports_no_mismatch_when_status_matches():
+    results = [ScenarioResult("unit_cents", "passed"), ScenarioResult("tz_shift", "failed")]
+    manifest = {
+        "scenarios": ["unit_cents", "tz_shift"],
+        "expected": {
+            "unit_cents": "passed",
+            "tz_shift": "failed",
+        },
+    }
+    assert compare_to_manifest(results, manifest) == []
+
+
+def test_compare_to_manifest_reports_a_mismatch_when_status_diverges():
+    results = [ScenarioResult("tz_shift", "passed")]
+    manifest = {"scenarios": ["tz_shift"], "expected": {"tz_shift": "failed"}}
+    mismatches = compare_to_manifest(results, manifest)
+    assert len(mismatches) == 1
+    assert "tz_shift" in mismatches[0]
+    assert "failed" in mismatches[0]
+    assert "passed" in mismatches[0]
+
+
+def test_compare_to_manifest_skips_scenarios_missing_an_expected_status():
+    results = [
+        ScenarioResult("bad_repair_rejected", "passed"),
+        ScenarioResult("tz_shift", "failed"),
+    ]
+    manifest = {"scenarios": ["tz_shift"], "expected": {"tz_shift": "failed"}}
+    assert compare_to_manifest(results, manifest) == []
 
 
 def _robustness_grades(stage):
