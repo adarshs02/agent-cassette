@@ -91,6 +91,8 @@ Phase E closed loop passed acceptance, then shipped as one release. No new publi
   unchanged; no new public Python export, `EventType`, schema, dependency, or version change.
 
 ### Fixed
+- `wrap_mcp` now trusts `mcp_types`, the package mcp SDK 2.x moved its result
+  types into, so real mcp>=2 tool results record and replay.
 - Secret-key redaction no longer redacts integer token-count fields — keys
   ending in `*_tokens`/`*TokenCount`/`*_token_count` (`input_tokens`,
   `output_tokens`, `max_tokens`, `cache_read_input_tokens`,

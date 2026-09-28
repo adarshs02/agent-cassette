@@ -11,7 +11,7 @@ from agent_cassette.integrations._serialization import serialize_sdk_value
 
 Session = TypeVar("Session")
 
-_TRUSTED_ROOTS = ("mcp",)
+_TRUSTED_ROOTS = ("mcp", "mcp_types")
 
 
 def _to_data(value: Any) -> Any:
