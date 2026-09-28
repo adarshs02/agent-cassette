@@ -1,0 +1,26 @@
+{
+  "scenarios": [
+    "control_distractor",
+    "control_healthy",
+    "datahub_timeout",
+    "join_fanout",
+    "null_surge",
+    "rate_limit_midrun",
+    "schema_rename",
+    "stale_feed",
+    "tz_shift",
+    "unit_cents"
+  ],
+  "expected": {
+    "control_distractor": "passed",
+    "control_healthy": "passed",
+    "datahub_timeout": "passed",
+    "join_fanout": "passed",
+    "null_surge": "passed",
+    "rate_limit_midrun": "passed",
+    "schema_rename": "passed",
+    "stale_feed": "passed",
+    "tz_shift": "failed",
+    "unit_cents": "passed"
+  }
+}
