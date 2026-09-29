@@ -249,6 +249,58 @@ def test_max_tokens_is_raised():
     assert loop.MAX_TOKENS == 16000
 
 
+def test_get_is_none_safe_for_dict_missing_a_key():
+    """A replayed/recorded usage dict from before the cache fields existed
+    must not raise KeyError when a newer field is looked up."""
+    from retrace.agent.loop import _get
+
+    usage = {"input_tokens": 10, "output_tokens": 2}
+    assert _get(usage, "input_tokens") == 10
+    assert _get(usage, "cache_read_input_tokens") is None
+    assert _get(usage, "cache_creation_input_tokens") is None
+    assert int(_get(usage, "cache_read_input_tokens") or 0) == 0
+
+
+def test_get_is_none_safe_for_objects_missing_an_attribute():
+    from retrace.agent.loop import _get
+
+    class _Bare:
+        input_tokens = 5
+
+    assert _get(_Bare(), "input_tokens") == 5
+    assert _get(_Bare(), "cache_read_input_tokens") is None
+
+
+def test_run_agent_survives_dict_shaped_usage_without_cache_keys(tmp_path, baseline):
+    """An older recorded/replayed response whose usage dict predates the cache
+    fields must not crash run_agent; the missing fields must read as 0."""
+    state, ex, conn = _executor(tmp_path, baseline)
+
+    class _DictModel:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+            self.messages = self
+
+        def create(self, **kwargs: Any) -> dict[str, Any]:
+            self.requests.append(kwargs)
+            return {
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "finish", "input": {"report": "r"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 10, "output_tokens": 2},  # no cache_* keys
+            }
+
+    try:
+        stats = run_agent(_DictModel(), ex, state, model="m", sleep=lambda s: None, max_turns=1)
+    finally:
+        conn.close()
+    assert stats.input_tokens == 10
+    assert stats.output_tokens == 2
+    assert stats.cache_read_input_tokens == 0
+    assert stats.cache_creation_input_tokens == 0
+
+
 def test_cache_tokens_are_accumulated_from_usage(tmp_path, baseline):
     state, ex, conn = _executor(tmp_path, baseline)
 

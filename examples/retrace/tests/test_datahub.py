@@ -379,6 +379,59 @@ def test_compact_entities_passes_through_error_dict():
     assert _compact_entities({"error": "not found"}) == {"error": "not found"}
 
 
+def test_tag_name_handles_bare_strings_and_nested_shapes():
+    from retrace.tools.datahub import _tag_name
+
+    assert _tag_name("urn:li:tag:pii") == "urn:li:tag:pii"
+    assert _tag_name({"tag": {"properties": {"name": "pii"}}}) == "pii"
+    assert _tag_name({"tag": {"name": "pii"}}) == "pii"
+    assert _tag_name({"tag": {"urn": "urn:li:tag:pii"}}) == "urn:li:tag:pii"
+    assert _tag_name({"name": "pii"}) == "pii"  # no "tag" wrapper
+    assert _tag_name({"urn": "urn:li:tag:pii"}) == "urn:li:tag:pii"
+    assert _tag_name(123) is None
+    assert _tag_name({}) is None
+
+
+def test_compact_tags_reads_tags_and_global_tags_shapes():
+    from retrace.tools.datahub import _compact_tags
+
+    assert _compact_tags({"tags": {"tags": ["urn:li:tag:pii"]}}) == ["urn:li:tag:pii"]
+    assert _compact_tags({"globalTags": {"tags": [{"tag": {"properties": {"name": "pii"}}}]}}) == [
+        "pii"
+    ]
+    assert _compact_tags({}) == []
+    assert _compact_tags({"tags": {"tags": []}}) == []
+
+
+def test_compact_entity_keeps_bare_string_owners_and_tags_together():
+    """The fake produces owners as bare corpuser URN strings (not
+    {"owner": {...}} dicts, unlike the real-shape test above); a tags block
+    must survive compaction alongside them."""
+    from retrace.tools.datahub import _compact_entity
+
+    entity = {
+        "urn": dataset_urn("raw.raw_orders"),
+        "name": "raw.raw_orders",
+        "ownership": {"owners": ["urn:li:corpuser:jordan.lee"]},
+        "globalTags": {"tags": [{"tag": {"urn": "urn:li:tag:retrace-incident"}}]},
+    }
+    compacted = _compact_entity(entity)
+    assert compacted["owners"] == ["urn:li:corpuser:jordan.lee"]
+    assert compacted["tags"] == ["urn:li:tag:retrace-incident"]
+
+
+def test_tools_over_fake_session_owners_survive_compaction():
+    """End-to-end: DataHubTools.get_dataset over the fake session (which
+    emits bare-string owner URNs, per test_compact_entity above) keeps the
+    owners list after compaction."""
+    conn = DataHubConnection.from_session(FakeDataHubSession())
+    try:
+        ds = DataHubTools(conn).get_dataset(dataset_urn("raw.raw_orders"))
+        assert ds[0]["owners"] == ["urn:li:corpuser:jordan.lee"]
+    finally:
+        conn.close()
+
+
 def test_compact_lineage_keeps_gate_working():
     """The lineage gate (check_claim_evidence) substring-matches the table
     name in json.dumps(evidence.payload); compaction must not lose it, even

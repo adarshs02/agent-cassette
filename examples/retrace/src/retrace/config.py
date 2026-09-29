@@ -19,7 +19,7 @@ class Settings:
     datahub_gms_url: str = "http://localhost:8080"
     datahub_gms_token: str | None = None
     mcp_server_spec: str = "mcp-server-datahub"
-    max_turns: int = 25
+    max_turns: int = 30
     max_repair_attempts: int = 3
     max_nudges: int = 2
     ingest_settle_s: float = 5.0

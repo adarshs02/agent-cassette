@@ -34,10 +34,6 @@ def _is_error(value: Any) -> bool:
     return isinstance(value, dict) and "error" in value
 
 
-# DataHub tools whose errors count toward the consecutive-outage stop below.
-_DATAHUB_TOOL_NAMES = frozenset(
-    {"datahub_search", "datahub_get_dataset", "datahub_lineage", "write_back"}
-)
 MAX_DATAHUB_ERRORS = 3
 
 
@@ -88,33 +84,42 @@ class ToolExecutor:
         if not isinstance(args, dict):
             return {"error": "tool input must be an object"}
         try:
-            result = handler(**args)
+            return handler(**args)
         except TypeError as error:
-            result = {"error": f"bad arguments for {name}: {error}"}
+            return {"error": f"bad arguments for {name}: {error}"}
         except (GateError, RepairRejected, SqlRejected, SqlTimeout, ValueError) as error:
-            result = {"error": str(error)}
+            return {"error": str(error)}
         except (duckdb.Error, OSError) as error:
-            result = {"error": f"{type(error).__name__}: {error}"}
-        return self._track_datahub_outage(name, result)
+            return {"error": f"{type(error).__name__}: {error}"}
 
-    def _track_datahub_outage(self, name: str, result: dict[str, Any]) -> dict[str, Any]:
-        """Fail the run once a DataHub tool has errored MAX_DATAHUB_ERRORS times in a
-        row (any successful DataHub call resets the streak); a hopeless outage would
-        otherwise burn the whole turn budget without ever making progress."""
-        if name not in _DATAHUB_TOOL_NAMES:
-            return result
+    def _track_datahub_outage(self, result: Any) -> dict[str, Any] | None:
+        """Fail the run once datahub_search/datahub_get_dataset/datahub_lineage have
+        errored MAX_DATAHUB_ERRORS times in a row (a hopeless outage would otherwise
+        burn the whole turn budget without ever making progress). Only a real DataHub
+        failure (the DataHubTools result itself) counts -- never a dispatch-level
+        argument/TypeError, since those never reach here -- and any successful
+        DataHub result resets the streak. write_back is deliberately excluded: it
+        doesn't call this (see t_write_back), since a failed write-back after a
+        verified repair or an escalation must never fail an otherwise-good run.
+        Returns the outage error dict once the streak trips, else None (meaning:
+        return `result` as-is).
+        """
         if not _is_error(result):
             self._datahub_error_streak = 0
-            return result
+            return None
         self._datahub_error_streak += 1
         if self._datahub_error_streak < MAX_DATAHUB_ERRORS:
-            return result
+            return None
         reason = f"DataHub unavailable: {MAX_DATAHUB_ERRORS} consecutive errors"
         fail(self.state, reason)
         self.finished = True
         return {"error": reason}
 
     def _fact(self, source: str, kind: str, summary: str, result: Any) -> dict[str, Any]:
+        if source == "datahub":
+            outage = self._track_datahub_outage(result)
+            if outage is not None:
+                return outage
         if _is_error(result):
             return result
         item = self.store.add(source, kind, summary, result)  # type: ignore[arg-type]

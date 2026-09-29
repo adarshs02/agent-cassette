@@ -44,7 +44,7 @@ class LoopStats:
 
 
 def _get(obj: Any, key: str) -> Any:
-    return obj[key] if isinstance(obj, dict) else getattr(obj, key)
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
 
 
 def _plain_blocks(response: Any) -> list[dict[str, Any]]:
@@ -89,10 +89,14 @@ def _create(
                 ],
                 tools=TOOL_SCHEMAS,
                 messages=messages,
-                # Tools render before system, so this breakpoint also covers them; the
-                # explicit system-block cache_control above stays as a second, narrower
-                # breakpoint. This automatic (top-level) form is supported directly by
-                # the installed anthropic SDK (verified via its messages.create signature).
+                # This top-level (automatic) breakpoint lands on the last cacheable
+                # block -- the growing message tail -- so each turn's prefix (everything
+                # before this turn's new content) can be served from cache. It does NOT
+                # cover the tools+system prefix on its own: the explicit cache_control
+                # on the system block above is what pins that stable prefix as its own,
+                # earlier breakpoint. Supported directly by the installed anthropic SDK
+                # (top-level cache_control on messages.create) -- no extra_body fallback
+                # needed.
                 cache_control={"type": "ephemeral"},
             )
         except RETRYABLE:
@@ -108,7 +112,7 @@ def run_agent(
     state: IncidentState,
     *,
     model: str,
-    max_turns: int = 25,
+    max_turns: int = 30,
     max_nudges: int = 2,
     sleep: Callable[[float], None] = time.sleep,
 ) -> LoopStats:

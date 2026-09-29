@@ -562,3 +562,68 @@ def test_datahub_error_streak_resets_on_success(tmp_path, baseline):
     # Never 3 in a row, so the outage stop must never trip.
     assert ex.finished is False
     assert state.stage is not Stage.FAILED
+
+
+def test_malformed_datahub_args_do_not_trip_the_outage_stop(executor):
+    """Argument/TypeErrors from dispatch never reach _track_datahub_outage --
+    only a real DataHubTools error counts -- so repeating a malformed call
+    must never fail the run, even 3+ times in a row."""
+    ex = executor
+    for _ in range(3):
+        out = ex.dispatch("datahub_search", {"query": 123})
+        assert "error" in out and "bad arguments" in out["error"]
+    assert ex.finished is False
+    assert ex.state.stage is Stage.INVESTIGATING
+    # DataHub itself was never actually called, so it's still healthy.
+    ok = ex.dispatch("datahub_search", {"query": "revenue"})
+    assert "error" not in ok
+
+
+def test_malformed_datahub_lineage_missing_required_arg_does_not_trip_outage(executor):
+    """A missing required kwarg raises TypeError from handler(**args) itself
+    (before any DataHub call), which must not count either."""
+    ex = executor
+    for _ in range(3):
+        out = ex.dispatch("datahub_lineage", {"urn": "urn:li:dataset:(x,y,PROD)"})  # no direction
+        assert "error" in out and "bad arguments" in out["error"]
+    assert ex.finished is False
+    assert ex.state.stage is Stage.INVESTIGATING
+
+
+def test_write_back_failures_never_trip_the_outage_stop_and_finish_still_works(tmp_path, baseline):
+    """write_back doesn't go through _fact/_track_datahub_outage at all: a
+    failed write-back after a verified repair must never fail an otherwise
+    passing run. Stage stays VERIFIED and finish still works."""
+
+    class _WriteBackFailsSession(FakeDataHubSession):
+        async def call_tool(self, name, arguments=None):
+            if name == "save_document":
+                raise TimeoutError("DataHub down")
+            return await super().call_tool(name, arguments)
+
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    conn = DataHubConnection.from_session(_WriteBackFailsSession())
+    state = IncidentState(scenario="unit_cents", report="r")
+    ex = ToolExecutor(
+        state,
+        Warehouse(ws.warehouse, baseline),
+        Transforms(ws),
+        Repairer(ws, baseline, tmp_path / "scratch"),
+        DataHubTools(conn),
+    )
+    try:
+        _confirm(ex)
+        sql = get_fault("unit_cents").reference_patch["stg_orders"]
+        passed = ex.dispatch("propose_repair", {"file": "stg_orders.sql", "new_sql": sql})
+        assert passed["passed"] is True and ex.state.stage is Stage.VERIFIED
+        for _ in range(3):
+            out = ex.dispatch("write_back", {"summary": "fixed"})
+            assert "error" in out
+        assert ex.finished is False
+        assert ex.state.stage is Stage.VERIFIED
+        assert ex.state.failure_reason is None
+        finished = ex.dispatch("finish", {"report": "done despite write_back failures"})
+        assert finished == {"finished": True}
+        assert ex.finished is True
+    finally:
+        conn.close()
