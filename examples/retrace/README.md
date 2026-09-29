@@ -41,7 +41,7 @@ no API key and no DataHub.
 
 ```bash
 uv sync
-uv run retrace eval --replay            # offline, from committed cassettes; agent scenarios report "skipped" until cassettes are recorded
+uv run retrace eval --replay            # offline, from committed cassettes
 ```
 
 Live (records cassettes; needs Docker, DataHub, and an Anthropic key). Pin the DataHub MCP
@@ -58,7 +58,32 @@ uv run agent-cassette view evals/cassettes/unit_cents.jsonl --output unit_cents.
 
 ## Results
 
-Pending the first live recording (`uv run retrace eval --live`). Once recorded, the scorecard is written to `evals/results/scorecard.md` and CI replays every scenario from `evals/cassettes/`.
+Live run 2 against a real DataHub v1.7 quickstart with `claude-sonnet-5`, 3 trials per agent
+scenario, after token-cost improvements (conversation caching, compacted results, turn cap,
+early stop on outage) and the cross-platform determinism fix. Full details in
+[`evals/results/scorecard.md`](evals/results/scorecard.md).
+
+| scenario | passed |
+|---|---|
+| unit_cents | 3/3 |
+| schema_rename | 3/3 |
+| join_fanout | 3/3 |
+| tz_shift | 2/3 |
+| stale_feed | 3/3 |
+| null_surge | 3/3 |
+
+- Controls: 0 false positives in 6 runs (`control_healthy`, `control_distractor` × 3 trials).
+- Extra scenarios (`bad_repair_rejected`, `datahub_timeout`, `rate_limit_midrun`): all passed.
+- 23/24 agent trials overall. `tz_shift` trial 3 hit the turn cap; trials 1–2 passed.
+- Wall time: 2543.3s live. Keyless replay from `evals/cassettes/` (the recorded trial 1 of each
+  scenario): < 1 min, all 10/10 recorded outcomes match (macOS and Linux verified).
+- Tokens: 692 uncached input, 401,378 cache-write, 4,314,329 cache-read, 172,721 output.
+  Estimated cost ≈ $3.59 at Sonnet 5 list prices ($2/$10 per MTok, cache write 1.25×, cache read 0.1×),
+  vs ≈ $14.38 for run 1 (6.0M uncached input / 237k output) — about **75% cheaper** with same accuracy.
+
+CI runs `retrace eval --replay` keylessly, offline, from the committed cassettes. It replays
+every scenario and checks that each outcome matches the recording. A replay that reproduces a
+recorded failure is a pass; a replay whose outcome diverges from the recording is not.
 
 ## Credits
 

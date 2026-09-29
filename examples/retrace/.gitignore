@@ -5,3 +5,4 @@ __pycache__/
 /work/
 evals/results/trials/
 evals/results/replay/
+evals/results/partial/

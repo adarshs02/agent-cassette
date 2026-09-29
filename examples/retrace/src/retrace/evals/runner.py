@@ -83,9 +83,29 @@ def _cleanup_live(state: IncidentState, settings: Settings) -> None:
         print(f"WARNING: could not soft-delete {state.writeback_urns}: {error}", file=sys.stderr)
 
 
-def _manifest(cassette_dir: Path) -> list[str] | None:
+def load_manifest(cassette_dir: Path) -> dict[str, Any] | None:
+    """Load the full cassette manifest (scenario list + expected recorded statuses)."""
     path = cassette_dir / MANIFEST
-    return json.loads(path.read_text())["scenarios"] if path.exists() else None
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def _manifest(cassette_dir: Path) -> list[str] | None:
+    manifest = load_manifest(cassette_dir)
+    return manifest["scenarios"] if manifest is not None else None
+
+
+def compare_to_manifest(results: list[ScenarioResult], manifest: dict[str, Any]) -> list[str]:
+    """Compare replayed statuses against manifest["expected"] (each scenario's recorded,
+    trial-1 status). Returns one description per mismatch; a scenario absent from
+    "expected" (an old manifest, or a scenario recorded without one) is not reported.
+    """
+    expected = manifest.get("expected", {})
+    mismatches = []
+    for result in results:
+        want = expected.get(result.scenario)
+        if want is not None and result.status != want:
+            mismatches.append(f"{result.scenario}: recorded {want}, replayed as {result.status}")
+    return mismatches
 
 
 def run_scenario(
@@ -261,9 +281,33 @@ def run_eval(
             if trial > 0:
                 result.scenario = f"{scenario.name}#t{trial + 1}"
             results.append(result)
-    if mode == "live" and not names:
-        cassette_dir.mkdir(parents=True, exist_ok=True)
-        errored = {r.scenario for r in results if r.status == "error"}
-        recorded = sorted(p.stem for p in cassette_dir.glob("*.jsonl") if p.stem not in errored)
-        (cassette_dir / MANIFEST).write_text(json.dumps({"scenarios": recorded}, indent=2) + "\n")
+    if mode == "live":
+        _update_manifest(cassette_dir, results)
     return results
+
+
+def _update_manifest(cassette_dir: Path, results: list[ScenarioResult]) -> None:
+    """Keep MANIFEST.json in sync with a live run, scoped or full.
+
+    Loads the existing manifest (if any) and overwrites "expected"[name] for each
+    scenario *this run* recorded (trial-1 status; trials 2+ are suffixed "#tN" and
+    skipped, and an errored trial-1 already deleted its own cassette, so it's
+    skipped too). "scenarios" is recomputed from the cassettes that actually exist
+    on disk, and any "expected" entry whose cassette is gone -- including an
+    orphan cassette with no prior entry -- is dropped rather than guessed at.
+    """
+    cassette_dir.mkdir(parents=True, exist_ok=True)
+    existing = load_manifest(cassette_dir) or {}
+    expected = dict(existing.get("expected", {}))
+    for result in results:
+        if "#t" in result.scenario or result.status == "error":
+            continue
+        expected[result.scenario] = result.status
+    scenarios = sorted(p.stem for p in cassette_dir.glob("*.jsonl"))
+    for name in scenarios:
+        if name not in expected:
+            print(f"WARNING: {name}.jsonl has no recorded expected status", file=sys.stderr)
+    expected = {name: status for name, status in expected.items() if name in scenarios}
+    (cassette_dir / MANIFEST).write_text(
+        json.dumps({"scenarios": scenarios, "expected": expected}, indent=2) + "\n"
+    )

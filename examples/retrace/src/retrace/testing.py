@@ -37,7 +37,12 @@ class ScriptedModel:
                 "content": content,
                 "stop_reason": "tool_use" if step else "end_turn",
                 "stop_sequence": None,
-                "usage": {"input_tokens": 100, "output_tokens": 20},
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
             }
         )
 

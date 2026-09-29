@@ -30,6 +30,8 @@ Rules:
   by SQL; if they fail, the problem is upstream.
 - Never blanket-rewrite history. Keep fixes scoped to the affected rows.
 - End only by calling finish.
+- Be terse: no narration between tool calls; call tools directly. Keep the finish report
+  and write_back summary under 120 words.
 """
 
 _STR = {"type": "string"}

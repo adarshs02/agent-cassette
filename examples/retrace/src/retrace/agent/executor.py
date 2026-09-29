@@ -24,7 +24,7 @@ from retrace.tools.warehouse import MAX_RESULT_CHARS, SqlRejected, SqlTimeout, W
 
 
 def _clip(value: Any) -> Any:
-    text = json.dumps(value, default=str, sort_keys=True)
+    text = json.dumps(value, default=str, sort_keys=True, separators=(",", ":"))
     if len(text) <= MAX_RESULT_CHARS:
         return value
     return {"truncated": True, "preview": text[:MAX_RESULT_CHARS]}
@@ -32,6 +32,9 @@ def _clip(value: Any) -> Any:
 
 def _is_error(value: Any) -> bool:
     return isinstance(value, dict) and "error" in value
+
+
+MAX_DATAHUB_ERRORS = 3
 
 
 class ToolExecutor:
@@ -52,6 +55,7 @@ class ToolExecutor:
         self.datahub = datahub
         self.max_repair_attempts = max_repair_attempts
         self.finished = False
+        self._datahub_error_streak = 0
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
             "datahub_search": self.t_datahub_search,
             "datahub_get_dataset": self.t_datahub_get_dataset,
@@ -88,7 +92,34 @@ class ToolExecutor:
         except (duckdb.Error, OSError) as error:
             return {"error": f"{type(error).__name__}: {error}"}
 
+    def _track_datahub_outage(self, result: Any) -> dict[str, Any] | None:
+        """Fail the run once datahub_search/datahub_get_dataset/datahub_lineage have
+        errored MAX_DATAHUB_ERRORS times in a row (a hopeless outage would otherwise
+        burn the whole turn budget without ever making progress). Only a real DataHub
+        failure (the DataHubTools result itself) counts -- never a dispatch-level
+        argument/TypeError, since those never reach here -- and any successful
+        DataHub result resets the streak. write_back is deliberately excluded: it
+        doesn't call this (see t_write_back), since a failed write-back after a
+        verified repair or an escalation must never fail an otherwise-good run.
+        Returns the outage error dict once the streak trips, else None (meaning:
+        return `result` as-is).
+        """
+        if not _is_error(result):
+            self._datahub_error_streak = 0
+            return None
+        self._datahub_error_streak += 1
+        if self._datahub_error_streak < MAX_DATAHUB_ERRORS:
+            return None
+        reason = f"DataHub unavailable: {MAX_DATAHUB_ERRORS} consecutive errors"
+        fail(self.state, reason)
+        self.finished = True
+        return {"error": reason}
+
     def _fact(self, source: str, kind: str, summary: str, result: Any) -> dict[str, Any]:
+        if source == "datahub":
+            outage = self._track_datahub_outage(result)
+            if outage is not None:
+                return outage
         if _is_error(result):
             return result
         item = self.store.add(source, kind, summary, result)  # type: ignore[arg-type]

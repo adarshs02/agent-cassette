@@ -17,7 +17,7 @@ from sqlglot import exp
 from retrace.pipeline.checks import BAND, failed_names
 from retrace.pipeline.checks import run_checks as run_pipeline_checks
 
-MAX_RESULT_CHARS = 8000
+MAX_RESULT_CHARS = 4000
 MAX_ROWS = 200
 QUERY_TIMEOUT_S = 5.0
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -41,6 +41,81 @@ def ensure_read_only(query: str) -> None:
         raise SqlRejected("exactly one statement is allowed")
     if not isinstance(statements[0], exp.Query):
         raise SqlRejected("only SELECT/WITH queries are allowed")
+
+
+def _existing_ordinals(order: exp.Order | None) -> set[int]:
+    """Ordinal positions (e.g. the `2` in `ORDER BY 2, name`) the model
+    already listed in its ORDER BY, if any."""
+    if order is None:
+        return set()
+    ordinals: set[int] = set()
+    for item in order.expressions:
+        target = item.this if isinstance(item, exp.Ordered) else item
+        if isinstance(target, exp.Literal) and target.is_int:
+            ordinals.add(int(target.this))
+    return ordinals
+
+
+def _append_ordinal_tiebreakers(tree: exp.Query, n: int) -> None:
+    """Make `tree`'s outermost ORDER BY a total order over its `n` output
+    columns by appending ascending ordinal positions 1..n, skipping any
+    ordinal the model already listed explicitly. Mutates `tree` in place.
+
+    This never changes the model's own ORDER BY expressions/direction (e.g.
+    `ORDER BY rate_day DESC` stays primary and DESC) -- it only adds
+    tie-breakers that fire for rows equal on everything listed so far, so
+    LIMIT/OFFSET keep selecting the same "logical" rows the model asked for,
+    just with a platform-independent choice among ties.
+    """
+    order = tree.args.get("order")
+    seen = _existing_ordinals(order)
+    new_terms = [exp.Ordered(this=exp.Literal.number(i)) for i in range(1, n + 1) if i not in seen]
+    if not new_terms:
+        return
+    if order is not None:
+        order.set("expressions", list(order.expressions) + new_terms)
+    else:
+        tree.set("order", exp.Order(expressions=new_terms))
+
+
+def _is_deterministic_shape(tree: exp.Expression) -> bool:
+    """Whether `tree` is a query shape we know ORDER BY/LIMIT/OFFSET attach
+    to directly: a plain SELECT (a top-level `WITH ... SELECT` is the same
+    node -- sqlglot hangs the CTE list off it as `with_`), or a set operation
+    (UNION/INTERSECT/EXCEPT, which likewise carries `with_` when a CTE wraps
+    it, and carries its own `order`/`limit`/`offset`). Anything else (a bare
+    parenthesized subquery, VALUES, ...) we haven't verified this rewrite
+    against, so callers should treat it as unsupported.
+    """
+    return isinstance(tree, (exp.Select, exp.SetOperation))
+
+
+def _sort_key(value: Any) -> tuple[bool, str, str]:
+    """None-safe, type-safe ordering key for a single cell: None sorts first,
+    then by type name, then by repr -- so mixed/NULL columns never raise
+    TypeError from Python's `<` on incomparable types."""
+    return (value is None, str(type(value)), repr(value))
+
+
+def _row_sort_key(row: tuple[Any, ...]) -> tuple[tuple[bool, str, str], ...]:
+    return tuple(_sort_key(v) for v in row)
+
+
+def _has_order_or_limit(query: str) -> bool:
+    """Best-effort check for whether `query` already constrains its own
+    order (ORDER BY) or row selection (LIMIT/OFFSET) on its outermost query.
+    Used only to gate the Python-side sort fallback: when we can't tell
+    (unparseable, or a shape `_is_deterministic_shape` doesn't recognize) we
+    assume yes, so we never second-guess a query the model already
+    constrained.
+    """
+    try:
+        tree = sqlglot.parse_one(query, read="duckdb")
+    except sqlglot.errors.ParseError:
+        return True
+    if not _is_deterministic_shape(tree):
+        return True
+    return tree.args.get("order") is not None or tree.args.get("limit") is not None
 
 
 def _jsonable(value: Any) -> Any:
@@ -86,12 +161,62 @@ class Warehouse:
         columns, rows = self._execute(sql, params)
         return [{c: _jsonable(v) for c, v in zip(columns, row, strict=True)} for row in rows]
 
+    def _deterministic_sql(self, query: str) -> str | None:
+        """Rewrite `query` so its outermost ORDER BY is a total order across
+        every output column, without changing the model's own intended
+        order: DuckDB (like most engines) makes no guarantee about the
+        relative order of rows that tie on the ORDER BY key (or about row
+        order at all when there's no ORDER BY), and ties can resolve
+        differently across platforms/thread counts -- exactly what makes
+        `ORDER BY rate_day DESC LIMIT 15` non-reproducible between macOS and
+        Linux when the model's chosen columns don't fully disambiguate rows.
+
+        Returns the rewritten SQL (LIMIT/OFFSET still follow ORDER BY), or
+        None if the rewrite can't be applied safely -- the caller then falls
+        back. Never echoed back to the model; it only sees its own SQL.
+        """
+        try:
+            tree = sqlglot.parse_one(query, read="duckdb")
+        except sqlglot.errors.ParseError:
+            return None
+        if not _is_deterministic_shape(tree):
+            return None
+        # SELECT * (or SELECT * plus explicit columns) has unknown width
+        # until resolved against the catalog -- ask DuckDB via the same
+        # read-only path used for the real query, rather than guessing from
+        # the parsed expression list.
+        try:
+            _, describe_rows = self._execute(f"DESCRIBE {query}")
+        except duckdb.Error:
+            return None
+        n = len(describe_rows)
+        if not n:
+            return None
+        _append_ordinal_tiebreakers(tree, n)
+        try:
+            return tree.sql(dialect="duckdb")
+        except Exception:
+            return None
+
     def run_sql(self, query: str) -> dict[str, Any]:
         ensure_read_only(query)
+        rewritten = self._deterministic_sql(query)
         try:
-            columns, rows = self._execute(query)
+            columns, rows = self._execute(rewritten if rewritten is not None else query)
         except duckdb.Error as error:
             raise SqlRejected(f"query failed: {error}") from error
+        if rewritten is None and not _has_order_or_limit(query):
+            # The rewrite didn't apply (sqlglot couldn't model the shape, or
+            # DESCRIBE failed) and the model imposed no order/limit of its
+            # own, so there's nothing of its intent to preserve and no
+            # partial-tie-among-a-LIMIT hazard -- sort the fetched rows in
+            # Python so the result is at least deterministic, even though we
+            # can't push it into the query. (If it HAD an ORDER BY or LIMIT,
+            # we leave it as-is: sorting post-LIMIT couldn't undo a
+            # platform-dependent row already dropped by the engine, and we'd
+            # rather run the model's query unmodified than silently rewrite
+            # its semantics.)
+            rows = sorted(rows, key=_row_sort_key)
         truncated = len(rows) > MAX_ROWS
         payload = {
             "columns": columns,
