@@ -36,6 +36,8 @@ class LoopStats:
     tool_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return asdict(self)
@@ -87,6 +89,11 @@ def _create(
                 ],
                 tools=TOOL_SCHEMAS,
                 messages=messages,
+                # Tools render before system, so this breakpoint also covers them; the
+                # explicit system-block cache_control above stays as a second, narrower
+                # breakpoint. This automatic (top-level) form is supported directly by
+                # the installed anthropic SDK (verified via its messages.create signature).
+                cache_control={"type": "ephemeral"},
             )
         except RETRYABLE:
             if attempt == MAX_ATTEMPTS - 1:
@@ -101,7 +108,7 @@ def run_agent(
     state: IncidentState,
     *,
     model: str,
-    max_turns: int = 40,
+    max_turns: int = 25,
     max_nudges: int = 2,
     sleep: Callable[[float], None] = time.sleep,
 ) -> LoopStats:
@@ -115,6 +122,8 @@ def run_agent(
         usage = _get(response, "usage")
         stats.input_tokens += int(_get(usage, "input_tokens") or 0)
         stats.output_tokens += int(_get(usage, "output_tokens") or 0)
+        stats.cache_read_input_tokens += int(_get(usage, "cache_read_input_tokens") or 0)
+        stats.cache_creation_input_tokens += int(_get(usage, "cache_creation_input_tokens") or 0)
         blocks = _plain_blocks(response) or [{"type": "text", "text": "(no content)"}]
         messages.append({"role": "assistant", "content": blocks})
         stop_reason = _get(response, "stop_reason")
@@ -184,7 +193,7 @@ def run_agent(
             result: dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": use["id"],
-                "content": json.dumps(output, sort_keys=True, default=str),
+                "content": json.dumps(output, sort_keys=True, separators=(",", ":"), default=str),
             }
             if "error" in output:
                 result["is_error"] = True

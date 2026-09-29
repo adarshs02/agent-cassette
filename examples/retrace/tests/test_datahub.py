@@ -259,3 +259,171 @@ def test_mcp_timeout_is_recorded_and_replayed(tmp_path):
                 conn.call("search", {"query": "x", "num_results": 10})
         finally:
             conn.close()
+
+
+# --- Compaction: drop facets/aggregations/platform objects, keep urn/name/description ---
+
+REAL_FACETS = [
+    {
+        "field": "platform",
+        "displayName": "Platform",
+        "aggregations": [{"value": "urn:li:dataPlatform:duckdb", "count": 8}],
+    }
+]
+
+
+def test_compact_search_strips_facets_and_flattens_hits():
+    from retrace.tools.datahub import _compact_search
+
+    real = {
+        "start": 0,
+        "count": 10,
+        "total": 1,
+        "searchResults": [
+            {
+                "entity": {
+                    "urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,marts.exec_metric,PROD)",
+                    "properties": {"name": "marts.exec_metric"},
+                }
+            }
+        ],
+        "facets": REAL_FACETS,
+    }
+    compacted = _compact_search(real)
+    assert compacted == {
+        "total": 1,
+        "searchResults": [
+            {
+                "urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,marts.exec_metric,PROD)",
+                "name": "marts.exec_metric",
+            }
+        ],
+    }
+    assert len(json.dumps(compacted)) < len(json.dumps(real))
+
+
+def test_compact_search_passes_through_unknown_shapes():
+    from retrace.tools.datahub import _compact_search
+
+    assert _compact_search({"error": "boom"}) == {"error": "boom"}
+    assert _compact_search("plain text") == "plain text"
+
+
+def test_compact_lineage_strips_facets_keeps_urn_name_degree():
+    from retrace.tools.datahub import _compact_lineage
+
+    real = {
+        "upstreams": {
+            "total": 7,
+            "facets": REAL_FACETS,
+            "searchResults": [
+                {
+                    "entity": {"urn": dataset_urn("raw.raw_orders"), "name": "raw.raw_orders"},
+                    "degree": 1,
+                }
+            ],
+        }
+    }
+    compacted = _compact_lineage(real, "upstream")
+    assert compacted == {
+        "upstreams": [
+            {"urn": dataset_urn("raw.raw_orders"), "name": "raw.raw_orders", "degree": 1}
+        ],
+        "total": 7,
+    }
+    assert len(json.dumps(compacted)) < len(json.dumps(real))
+
+
+def test_compact_lineage_passes_through_unknown_shapes():
+    from retrace.tools.datahub import _compact_lineage
+
+    assert _compact_lineage({"error": "boom"}, "upstream") == {"error": "boom"}
+    assert _compact_lineage({"downstreams": {"total": 0}}, "upstream") == {
+        "downstreams": {"total": 0}
+    }
+
+
+def test_compact_entities_strips_platform_flattens_owners_and_fields():
+    from retrace.tools.datahub import _compact_entities
+
+    real = [
+        {
+            "urn": dataset_urn("raw.raw_orders"),
+            "name": "raw.raw_orders",
+            "platform": {"urn": "urn:li:dataPlatform:duckdb", "properties": {"logoUrl": "x"}},
+            "properties": {"name": "raw.raw_orders", "description": "Order events."},
+            "schemaMetadata": {
+                "fields": [
+                    {"fieldPath": "amount", "description": "Amount.", "nativeDataType": "double"}
+                ]
+            },
+            "ownership": {"owners": [{"owner": {"urn": "urn:li:corpuser:jordan.lee"}}]},
+        }
+    ]
+    compacted = _compact_entities(real)
+    assert compacted == [
+        {
+            "urn": dataset_urn("raw.raw_orders"),
+            "name": "raw.raw_orders",
+            "description": "Order events.",
+            "fields": [{"fieldPath": "amount", "description": "Amount.", "type": "double"}],
+            "owners": ["urn:li:corpuser:jordan.lee"],
+        }
+    ]
+    assert len(json.dumps(compacted)) < len(json.dumps(real))
+
+
+def test_compact_entities_passes_through_error_dict():
+    from retrace.tools.datahub import _compact_entities
+
+    assert _compact_entities({"error": "not found"}) == {"error": "not found"}
+
+
+def test_compact_lineage_keeps_gate_working():
+    """The lineage gate (check_claim_evidence) substring-matches the table
+    name in json.dumps(evidence.payload); compaction must not lose it, even
+    against the real (facet-heavy, entity-nested) response shape."""
+    from retrace.agent.evidence import EvidenceStore, check_claim_evidence
+    from retrace.agent.state import IncidentState
+    from retrace.tools.datahub import _compact_lineage
+
+    real = {
+        "upstreams": {
+            "total": 1,
+            "facets": REAL_FACETS,
+            "searchResults": [
+                {
+                    "entity": {"urn": dataset_urn("raw.raw_orders"), "name": "raw.raw_orders"},
+                    "degree": 2,
+                }
+            ],
+        }
+    }
+    compacted = _compact_lineage(real, "upstream")
+    state = IncidentState(scenario="t", report="r")
+    store = EvidenceStore(state)
+    lineage_ev = store.add("datahub", "lineage", "upstream of KPI", compacted)
+    profile_ev = store.add("warehouse", "profile", "amount by processor", {"rows": []})
+    check_claim_evidence(store, "raw.raw_orders", [lineage_ev.id, profile_ev.id])  # no raise
+
+
+def test_tools_over_fake_session_use_compacted_shapes():
+    """DataHubTools.search/get_dataset/lineage apply compaction over the fake
+    session too (no "properties"/"schemaMetadata"/"ownership" nesting left)."""
+    conn = DataHubConnection.from_session(FakeDataHubSession())
+    try:
+        tools = DataHubTools(conn)
+        hits = tools.search("executive revenue")
+        assert any(
+            h["urn"] == dataset_urn("marts.exec_metric") and h["name"] == "marts.exec_metric"
+            for h in hits["searchResults"]
+        )
+        assert "properties" not in json.dumps(hits)
+        up = tools.lineage(KPI, "upstream", 3)
+        assert "properties" not in json.dumps(up)
+        assert any(e["name"] == "raw.raw_orders" for e in up["upstreams"])
+        ds = tools.get_dataset(dataset_urn("raw.raw_orders"))
+        assert "schemaMetadata" not in json.dumps(ds)
+        assert any(f["fieldPath"] == "amount" for f in ds[0]["fields"])
+    finally:
+        conn.close()

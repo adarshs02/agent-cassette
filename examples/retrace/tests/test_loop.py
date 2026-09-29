@@ -39,6 +39,7 @@ def test_scripted_unit_cents_run_reaches_written_back(tmp_path, baseline):
     assert stats.turns == len(unit_cents_script())
     first = model.requests[0]
     assert first["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert first["cache_control"] == {"type": "ephemeral"}
     assert first["messages"][0]["role"] == "user"
 
 
@@ -246,6 +247,64 @@ def test_max_tokens_is_raised():
     from retrace.agent import loop
 
     assert loop.MAX_TOKENS == 16000
+
+
+def test_cache_tokens_are_accumulated_from_usage(tmp_path, baseline):
+    state, ex, conn = _executor(tmp_path, baseline)
+
+    class _CacheModel:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+            self.messages = self
+
+        def create(self, **kwargs: Any) -> Message:
+            self.requests.append(kwargs)
+            index = len(self.requests)
+            usage = (
+                {
+                    "input_tokens": 50,
+                    "output_tokens": 10,
+                    "cache_read_input_tokens": 200,
+                    "cache_creation_input_tokens": 30,
+                }
+                if index == 1
+                else {
+                    "input_tokens": 60,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 400,
+                    "cache_creation_input_tokens": 0,
+                }
+            )
+            content = [
+                {
+                    "type": "tool_use",
+                    "id": f"toolu_{index}",
+                    "name": "get_metric_history",
+                    "input": {"days": 7},
+                }
+            ]
+            return Message.model_validate(
+                {
+                    "id": f"msg_{index:03d}",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": kwargs["model"],
+                    "content": content,
+                    "stop_reason": "tool_use",
+                    "stop_sequence": None,
+                    "usage": usage,
+                }
+            )
+
+    try:
+        stats = run_agent(_CacheModel(), ex, state, model="m", sleep=lambda s: None, max_turns=2)
+    finally:
+        conn.close()
+    assert stats.turns == 2
+    assert stats.cache_read_input_tokens == 600
+    assert stats.cache_creation_input_tokens == 30
+    assert stats.to_dict()["cache_read_input_tokens"] == 600
+    assert stats.to_dict()["cache_creation_input_tokens"] == 30
 
 
 def test_truncated_tool_use_is_not_dispatched(tmp_path, baseline):

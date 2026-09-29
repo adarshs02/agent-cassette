@@ -505,3 +505,60 @@ def test_write_back_records_document_urn(tmp_path, baseline):
 def test_writeback_urns_default_empty():
     state = IncidentState(scenario="s", report="r")
     assert state.writeback_urns == [] and state.to_dict()["writeback_urns"] == []
+
+
+class _PatternSession(FakeDataHubSession):
+    """Fails call_tool per a queue of booleans (True = raise), falling back to
+    the real fake behaviour once the queue is exhausted."""
+
+    def __init__(self, pattern: list[bool]) -> None:
+        super().__init__()
+        self._pattern = list(pattern)
+
+    async def call_tool(self, name, arguments=None):
+        fail_now = self._pattern.pop(0) if self._pattern else False
+        if fail_now:
+            raise TimeoutError("DataHub down")
+        return await super().call_tool(name, arguments)
+
+
+def _executor_with_pattern(tmp_path, baseline, pattern):
+    ws = prepare(tmp_path / "ws", fault="unit_cents")
+    conn = DataHubConnection.from_session(_PatternSession(pattern))
+    state = IncidentState(scenario="unit_cents", report="r")
+    ex = ToolExecutor(
+        state,
+        Warehouse(ws.warehouse, baseline),
+        Transforms(ws),
+        Repairer(ws, baseline, tmp_path / "scratch"),
+        DataHubTools(conn),
+    )
+    return state, ex, conn
+
+
+def test_three_consecutive_datahub_errors_fail_the_run(tmp_path, baseline):
+    state, ex, conn = _executor_with_pattern(tmp_path, baseline, [True, True, True])
+    try:
+        ex.dispatch("datahub_search", {"query": "revenue"})
+        ex.dispatch("datahub_search", {"query": "revenue"})
+        out = ex.dispatch("datahub_search", {"query": "revenue"})
+    finally:
+        conn.close()
+    assert out == {"error": "DataHub unavailable: 3 consecutive errors"}
+    assert ex.finished is True
+    assert state.stage is Stage.FAILED
+    assert state.failure_reason == "DataHub unavailable: 3 consecutive errors"
+
+
+def test_datahub_error_streak_resets_on_success(tmp_path, baseline):
+    state, ex, conn = _executor_with_pattern(tmp_path, baseline, [True, True, False, True, True])
+    try:
+        outs = [ex.dispatch("datahub_search", {"query": "revenue"}) for _ in range(5)]
+    finally:
+        conn.close()
+    assert "error" in outs[0] and "error" in outs[1]
+    assert "error" not in outs[2]  # the interleaved success resets the streak
+    assert "error" in outs[3] and "error" in outs[4]
+    # Never 3 in a row, so the outage stop must never trip.
+    assert ex.finished is False
+    assert state.stage is not Stage.FAILED

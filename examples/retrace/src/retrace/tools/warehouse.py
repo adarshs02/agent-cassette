@@ -17,7 +17,7 @@ from sqlglot import exp
 from retrace.pipeline.checks import BAND, failed_names
 from retrace.pipeline.checks import run_checks as run_pipeline_checks
 
-MAX_RESULT_CHARS = 8000
+MAX_RESULT_CHARS = 4000
 MAX_ROWS = 200
 QUERY_TIMEOUT_S = 5.0
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")

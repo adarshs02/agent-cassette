@@ -24,7 +24,7 @@ from retrace.tools.warehouse import MAX_RESULT_CHARS, SqlRejected, SqlTimeout, W
 
 
 def _clip(value: Any) -> Any:
-    text = json.dumps(value, default=str, sort_keys=True)
+    text = json.dumps(value, default=str, sort_keys=True, separators=(",", ":"))
     if len(text) <= MAX_RESULT_CHARS:
         return value
     return {"truncated": True, "preview": text[:MAX_RESULT_CHARS]}
@@ -32,6 +32,13 @@ def _clip(value: Any) -> Any:
 
 def _is_error(value: Any) -> bool:
     return isinstance(value, dict) and "error" in value
+
+
+# DataHub tools whose errors count toward the consecutive-outage stop below.
+_DATAHUB_TOOL_NAMES = frozenset(
+    {"datahub_search", "datahub_get_dataset", "datahub_lineage", "write_back"}
+)
+MAX_DATAHUB_ERRORS = 3
 
 
 class ToolExecutor:
@@ -52,6 +59,7 @@ class ToolExecutor:
         self.datahub = datahub
         self.max_repair_attempts = max_repair_attempts
         self.finished = False
+        self._datahub_error_streak = 0
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
             "datahub_search": self.t_datahub_search,
             "datahub_get_dataset": self.t_datahub_get_dataset,
@@ -80,13 +88,31 @@ class ToolExecutor:
         if not isinstance(args, dict):
             return {"error": "tool input must be an object"}
         try:
-            return handler(**args)
+            result = handler(**args)
         except TypeError as error:
-            return {"error": f"bad arguments for {name}: {error}"}
+            result = {"error": f"bad arguments for {name}: {error}"}
         except (GateError, RepairRejected, SqlRejected, SqlTimeout, ValueError) as error:
-            return {"error": str(error)}
+            result = {"error": str(error)}
         except (duckdb.Error, OSError) as error:
-            return {"error": f"{type(error).__name__}: {error}"}
+            result = {"error": f"{type(error).__name__}: {error}"}
+        return self._track_datahub_outage(name, result)
+
+    def _track_datahub_outage(self, name: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Fail the run once a DataHub tool has errored MAX_DATAHUB_ERRORS times in a
+        row (any successful DataHub call resets the streak); a hopeless outage would
+        otherwise burn the whole turn budget without ever making progress."""
+        if name not in _DATAHUB_TOOL_NAMES:
+            return result
+        if not _is_error(result):
+            self._datahub_error_streak = 0
+            return result
+        self._datahub_error_streak += 1
+        if self._datahub_error_streak < MAX_DATAHUB_ERRORS:
+            return result
+        reason = f"DataHub unavailable: {MAX_DATAHUB_ERRORS} consecutive errors"
+        fail(self.state, reason)
+        self.finished = True
+        return {"error": reason}
 
     def _fact(self, source: str, kind: str, summary: str, result: Any) -> dict[str, Any]:
         if _is_error(result):

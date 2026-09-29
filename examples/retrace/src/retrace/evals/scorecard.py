@@ -13,14 +13,27 @@ FAULTS = ("unit_cents", "schema_rename", "join_fanout", "tz_shift", "stale_feed"
 CONTROLS = ("control_healthy", "control_distractor")
 
 
+def _sum_stat(results: list[ScenarioResult], key: str) -> int:
+    return sum(r.stats.get(key, 0) for r in results)
+
+
 def _cost(results: list[ScenarioResult]) -> str:
     price_in = os.environ.get("RETRACE_PRICE_INPUT_PER_MTOK")
     price_out = os.environ.get("RETRACE_PRICE_OUTPUT_PER_MTOK")
     if not price_in or not price_out:
         return "n/a (set RETRACE_PRICE_INPUT_PER_MTOK / RETRACE_PRICE_OUTPUT_PER_MTOK)"
-    tokens_in = sum(r.stats.get("input_tokens", 0) for r in results)
-    tokens_out = sum(r.stats.get("output_tokens", 0) for r in results)
-    return f"${tokens_in / 1e6 * float(price_in) + tokens_out / 1e6 * float(price_out):.2f}"
+    p_in, p_out = float(price_in), float(price_out)
+    tokens_in = _sum_stat(results, "input_tokens")
+    tokens_out = _sum_stat(results, "output_tokens")
+    cache_read = _sum_stat(results, "cache_read_input_tokens")
+    cache_write = _sum_stat(results, "cache_creation_input_tokens")
+    cost = (
+        tokens_in / 1e6 * p_in
+        + cache_write / 1e6 * p_in * 1.25
+        + cache_read / 1e6 * p_in * 0.1
+        + tokens_out / 1e6 * p_out
+    )
+    return f"${cost:.2f}"
 
 
 def _next_run(results_dir: Path) -> int:
@@ -61,6 +74,12 @@ def write_results(
     controls_fp = sum(1 for c in CONTROLS if by_name.get(c) and by_name[c].status == "failed")
     not_graded = [r.scenario for r in results if r.status in ("skipped", "error")]
     expected = (manifest or {}).get("expected") if mode == "replay" else None
+    total_tokens = (
+        _sum_stat(results, "input_tokens")
+        + _sum_stat(results, "output_tokens")
+        + _sum_stat(results, "cache_read_input_tokens")
+        + _sum_stat(results, "cache_creation_input_tokens")
+    )
     lines = [
         f"# Retrace eval — {mode} (run {run})",
         "",
@@ -68,6 +87,7 @@ def write_results(
         f"- Control false positives: {controls_fp}/{len(CONTROLS)}",
         f"- Not graded (skipped/error): {', '.join(not_graded) if not_graded else 'none'}",
         f"- Total wall time: {sum(r.wall_s for r in results):.1f}s",
+        f"- Total tokens: {total_tokens}",
         f"- Cost: {_cost(results)}",
     ]
     match_column: dict[str, str] = {}
@@ -77,26 +97,41 @@ def write_results(
         matched = sum(1 for v in comparable if v == "yes")
         lines.append(f"- Matches recording: {matched}/{len(comparable)}")
     lines.append("")
-    header = (
-        "| scenario | status | stage | failed grades | turns | tool calls | tokens in | "
-        "tokens out | wall s |"
-    )
-    separator = "|---|---|---|---|---|---|---|---|---|"
+    columns = [
+        "scenario",
+        "status",
+        "stage",
+        "failed grades",
+        "turns",
+        "tool calls",
+        "tokens in",
+        "tokens out",
+        "cache read",
+        "cache write",
+        "wall s",
+    ]
     if expected is not None:
-        header += " matches recording |"
-        separator += "---|"
-    lines += [header, separator]
+        columns.append("matches recording")
+    lines.append("| " + " | ".join(columns) + " |")
+    lines.append("|" + "|".join(["---"] * len(columns)) + "|")
     for r in results:
         failed = ", ".join(g.name for g in r.grades if not g.passed) or (r.error or "")
-        row = (
-            f"| {r.scenario} | {r.status} | {r.final_stage or ''} | {_table_cell(failed)} | "
-            f"{r.stats.get('turns', '')} | {r.stats.get('tool_calls', '')} | "
-            f"{r.stats.get('input_tokens', '')} | {r.stats.get('output_tokens', '')} | "
-            f"{r.wall_s} |"
-        )
+        cells = [
+            r.scenario,
+            r.status,
+            r.final_stage or "",
+            _table_cell(failed),
+            str(r.stats.get("turns", "")),
+            str(r.stats.get("tool_calls", "")),
+            str(r.stats.get("input_tokens", "")),
+            str(r.stats.get("output_tokens", "")),
+            str(r.stats.get("cache_read_input_tokens", "")),
+            str(r.stats.get("cache_creation_input_tokens", "")),
+            str(r.wall_s),
+        ]
         if expected is not None:
-            row += f" {match_column[r.scenario]} |"
-        lines.append(row)
+            cells.append(match_column[r.scenario])
+        lines.append("| " + " | ".join(cells) + " |")
     errored = [r for r in results if r.status == "error" and r.error]
     if errored:
         lines += ["", "## Errors", ""]

@@ -14,7 +14,7 @@ def test_settings_from_env(monkeypatch):
     assert settings.model == "claude-opus-5-5"
     assert settings.datahub_gms_url == "http://dh:8080"
     assert settings.datahub_gms_token is None
-    assert settings.max_turns == 40
+    assert settings.max_turns == 25
 
 
 def test_default_model():
