@@ -75,7 +75,8 @@ early stop on outage) and the cross-platform determinism fix. Full details in
 - Controls: 0 false positives in 6 runs (`control_healthy`, `control_distractor` × 3 trials).
 - Extra scenarios (`bad_repair_rejected`, `datahub_timeout`, `rate_limit_midrun`): all passed.
 - 23/24 agent trials overall. `tz_shift` trial 3 hit the turn cap; trials 1–2 passed.
-- Wall time: 2543.3s live. Keyless replay from `evals/cassettes/`: < 1 min, all 24/24 outcomes match (macOS and Linux verified).
+- Wall time: 2543.3s live. Keyless replay from `evals/cassettes/` (the recorded trial 1 of each
+  scenario): < 1 min, all 10/10 recorded outcomes match (macOS and Linux verified).
 - Tokens: 692 uncached input, 401,378 cache-write, 4,314,329 cache-read, 172,721 output.
   Estimated cost ≈ $3.59 at Sonnet 5 list prices ($2/$10 per MTok, cache write 1.25×, cache read 0.1×),
   vs ≈ $14.38 for run 1 (6.0M uncached input / 237k output) — about **75% cheaper** with same accuracy.
