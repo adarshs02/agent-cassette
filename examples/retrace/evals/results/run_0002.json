@@ -42,14 +42,16 @@
         }
       ],
       "stats": {
-        "turns": 13,
-        "tool_calls": 24,
-        "input_tokens": 178602,
-        "output_tokens": 6402
+        "turns": 14,
+        "tool_calls": 22,
+        "input_tokens": 28,
+        "output_tokens": 5033,
+        "cache_read_input_tokens": 151631,
+        "cache_creation_input_tokens": 18204
       },
       "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -6,7 +6,14 @@\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n     currency,\n-    CAST(amount AS DOUBLE) AS amount,\n+    -- cloudpay_v2 (onboarded 2026-08-07) reports amount in minor units (cents)\n+    -- instead of major currency units as required by the payments-platform v1.3\n+    -- contract. Scope the fix to that processor only; all other processors are\n+    -- already in major units.\n+    CASE\n+        WHEN payment_processor = 'cloudpay_v2' THEN CAST(amount AS DOUBLE) / 100.0\n+        ELSE CAST(amount AS DOUBLE)\n+    END AS amount,\n     payment_processor,\n     status\n FROM raw.raw_orders\n",
-      "wall_s": 95.47,
+      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -6,7 +6,14 @@\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n     currency,\n-    CAST(amount AS DOUBLE) AS amount,\n+    CASE\n+        -- cloudpay_v2 (rolled out 2026-08-07) emits amount in minor units\n+        -- (cents) with no decimal separator, violating the payments-platform\n+        -- v1.3 contract (major units, e.g. 49.99). Rescale only those rows.\n+        WHEN payment_processor = 'cloudpay_v2' AND amount NOT LIKE '%.%'\n+            THEN CAST(amount AS DOUBLE) / 100.0\n+        ELSE CAST(amount AS DOUBLE)\n+    END AS amount,\n     payment_processor,\n     status\n FROM raw.raw_orders\n",
+      "wall_s": 85.51,
       "error": null
     },
     {
@@ -93,14 +95,16 @@
         }
       ],
       "stats": {
-        "turns": 11,
-        "tool_calls": 22,
-        "input_tokens": 139557,
-        "output_tokens": 5731
+        "turns": 15,
+        "tool_calls": 24,
+        "input_tokens": 30,
+        "output_tokens": 4788,
+        "cache_read_input_tokens": 160891,
+        "cache_creation_input_tokens": 16003
       },
       "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -6,7 +6,10 @@\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n     currency,\n-    CAST(amount AS DOUBLE) AS amount,\n+    CASE\n+        WHEN payment_processor = 'cloudpay_v2' THEN CAST(amount AS DOUBLE) / 100.0\n+        ELSE CAST(amount AS DOUBLE)\n+    END AS amount,\n     payment_processor,\n     status\n FROM raw.raw_orders\n",
-      "wall_s": 82.3,
+      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -6,7 +6,12 @@\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n     currency,\n-    CAST(amount AS DOUBLE) AS amount,\n+    -- cloudpay_v2 reports amount in minor units (cents) as integer strings;\n+    -- all other processors report decimal-dollar amounts. Normalize to dollars.\n+    CASE\n+        WHEN payment_processor = 'cloudpay_v2' THEN CAST(amount AS DOUBLE) / 100.0\n+        ELSE CAST(amount AS DOUBLE)\n+    END AS amount,\n     payment_processor,\n     status\n FROM raw.raw_orders\n",
+      "wall_s": 79.47,
       "error": null
     },
     {
@@ -144,14 +148,16 @@
         }
       ],
       "stats": {
-        "turns": 13,
-        "tool_calls": 22,
-        "input_tokens": 174220,
-        "output_tokens": 6732
+        "turns": 15,
+        "tool_calls": 24,
+        "input_tokens": 30,
+        "output_tokens": 5369,
+        "cache_read_input_tokens": 156675,
+        "cache_creation_input_tokens": 15385
       },
       "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -1,4 +1,8 @@\n -- Adapted from Project Blackbox (https://github.com/alejandro-publius/blackbox-datahub), Apache-2.0. Modified for Retrace.\n+-- FIX: cloudpay_v2 (onboarded 2026-08-07) emits amount in minor units (cents, no decimal point),\n+-- violating the payments-platform v1.3 contract of \"decimal in major currency units\".\n+-- Scoped correction: divide only cloudpay_v2 amounts by 100 to restore major-unit values;\n+-- all other processors are untouched.\n CREATE OR REPLACE TABLE staging.stg_orders AS\n SELECT\n     order_id,\n@@ -6,7 +10,10 @@\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n     currency,\n-    CAST(amount AS DOUBLE) AS amount,\n+    CASE\n+        WHEN payment_processor = 'cloudpay_v2' THEN CAST(amount AS DOUBLE) / 100.0\n+        ELSE CAST(amount AS DOUBLE)\n+    END AS amount,\n     payment_processor,\n     status\n FROM raw.raw_orders\n",
-      "wall_s": 104.85,
+      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -6,7 +6,14 @@\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n     currency,\n-    CAST(amount AS DOUBLE) AS amount,\n+    -- cloudpay_v2 (onboarded 2026-08-07) emits amount as integer cents with no\n+    -- decimal point, unlike legacy_pos/shopgate which always include one.\n+    -- Normalize cloudpay_v2 amounts back to dollars so units match other processors.\n+    CASE\n+        WHEN payment_processor = 'cloudpay_v2' AND amount NOT LIKE '%.%'\n+            THEN CAST(amount AS DOUBLE) / 100.0\n+        ELSE CAST(amount AS DOUBLE)\n+    END AS amount,\n     payment_processor,\n     status\n FROM raw.raw_orders\n",
+      "wall_s": 93.01,
       "error": null
     },
     {
@@ -190,14 +196,16 @@
         }
       ],
       "stats": {
-        "turns": 18,
-        "tool_calls": 37,
-        "input_tokens": 314092,
-        "output_tokens": 11675
+        "turns": 11,
+        "tool_calls": 20,
+        "input_tokens": 22,
+        "output_tokens": 3827,
+        "cache_read_input_tokens": 88140,
+        "cache_creation_input_tokens": 10396
       },
       "final_stage": "WRITTEN_BACK",
       "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -5,7 +5,7 @@\n     CAST(order_ts AS TIMESTAMP) AS order_ts,\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n-    currency,\n+    COALESCE(currency, currency_code) AS currency,\n     CAST(amount AS DOUBLE) AS amount,\n     payment_processor,\n     status\n",
-      "wall_s": 150.17,
+      "wall_s": 64.98,
       "error": null
     },
     {
@@ -236,14 +244,16 @@
         }
       ],
       "stats": {
-        "turns": 14,
-        "tool_calls": 26,
-        "input_tokens": 190124,
-        "output_tokens": 8555
+        "turns": 11,
+        "tool_calls": 21,
+        "input_tokens": 22,
+        "output_tokens": 3793,
+        "cache_read_input_tokens": 90770,
+        "cache_creation_input_tokens": 9971
       },
       "final_stage": "WRITTEN_BACK",
       "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -5,7 +5,7 @@\n     CAST(order_ts AS TIMESTAMP) AS order_ts,\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n-    currency,\n+    COALESCE(currency, currency_code) AS currency,\n     CAST(amount AS DOUBLE) AS amount,\n     payment_processor,\n     status\n",
-      "wall_s": 116.13,
+      "wall_s": 64.31,
       "error": null
     },
     {
@@ -283,13 +293,15 @@
       ],
       "stats": {
         "turns": 11,
-        "tool_calls": 19,
-        "input_tokens": 129621,
-        "output_tokens": 5172
+        "tool_calls": 21,
+        "input_tokens": 22,
+        "output_tokens": 3516,
+        "cache_read_input_tokens": 89264,
+        "cache_creation_input_tokens": 10008
       },
       "final_stage": "WRITTEN_BACK",
       "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -5,7 +5,7 @@\n     CAST(order_ts AS TIMESTAMP) AS order_ts,\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n-    currency,\n+    COALESCE(currency, currency_code) AS currency,\n     CAST(amount AS DOUBLE) AS amount,\n     payment_processor,\n     status\n",
-      "wall_s": 75.74,
+      "wall_s": 59.82,
       "error": null
     },
     {
@@ -328,14 +340,16 @@
         }
       ],
       "stats": {
-        "turns": 14,
-        "tool_calls": 27,
-        "input_tokens": 275546,
-        "output_tokens": 10714
+        "turns": 11,
+        "tool_calls": 21,
+        "input_tokens": 22,
+        "output_tokens": 3831,
+        "cache_read_input_tokens": 90805,
+        "cache_creation_input_tokens": 11439
       },
       "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_customers.sql\n+++ b/stg_customers.sql\n@@ -1,8 +1,24 @@\n -- Adapted from Project Blackbox (https://github.com/alejandro-publius/blackbox-datahub), Apache-2.0. Modified for Retrace.\n+-- Fix: raw.raw_customers violates its \"one row per customer\" contract for 289 customer_ids\n+-- (duplicate rows injected with created_at=2026-08-01). Deduplicate here, keeping the most\n+-- recent snapshot per customer_id, so downstream joins in marts.fct_revenue do not fan out\n+-- and double-count orders/revenue for affected customers.\n CREATE OR REPLACE TABLE staging.stg_customers AS\n SELECT\n     customer_id,\n     segment,\n     country,\n-    CAST(created_at AS DATE) AS created_at\n-FROM raw.raw_customers;\n+    created_at\n+FROM (\n+    SELECT\n+        customer_id,\n+        segment,\n+        country,\n+        CAST(created_at AS DATE) AS created_at,\n+        ROW_NUMBER() OVER (\n+            PARTITION BY customer_id\n+            ORDER BY created_at DESC\n+        ) AS rn\n+    FROM raw.raw_customers\n+)\n+WHERE rn = 1;\n",
-      "wall_s": 142.51,
+      "diff": "--- a/stg_customers.sql\n+++ b/stg_customers.sql\n@@ -5,4 +5,16 @@\n     segment,\n     country,\n     CAST(created_at AS DATE) AS created_at\n-FROM raw.raw_customers;\n+FROM (\n+    SELECT\n+        customer_id,\n+        segment,\n+        country,\n+        created_at,\n+        ROW_NUMBER() OVER (\n+            PARTITION BY customer_id\n+            ORDER BY created_at DESC\n+        ) AS rn\n+    FROM raw.raw_customers\n+) ranked\n+WHERE rn = 1;\n",
+      "wall_s": 68.98,
       "error": null
     },
     {
@@ -374,14 +388,16 @@
         }
       ],
       "stats": {
-        "turns": 12,
-        "tool_calls": 23,
-        "input_tokens": 187962,
-        "output_tokens": 6156
+        "turns": 13,
+        "tool_calls": 24,
+        "input_tokens": 26,
+        "output_tokens": 5425,
+        "cache_read_input_tokens": 144328,
+        "cache_creation_input_tokens": 14841
       },
       "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_customers.sql\n+++ b/stg_customers.sql\n@@ -1,8 +1,23 @@\n -- Adapted from Project Blackbox (https://github.com/alejandro-publius/blackbox-datahub), Apache-2.0. Modified for Retrace.\n+-- Fix: raw.raw_customers violates its \"one row per customer\" contract for 289 customer_ids\n+-- (duplicate snapshot rows). Deduplicate to the most recent record per customer_id so\n+-- downstream joins (e.g. marts.fct_revenue) do not fan out orders.\n CREATE OR REPLACE TABLE staging.stg_customers AS\n SELECT\n     customer_id,\n     segment,\n     country,\n-    CAST(created_at AS DATE) AS created_at\n-FROM raw.raw_customers;\n+    created_at\n+FROM (\n+    SELECT\n+        customer_id,\n+        segment,\n+        country,\n+        CAST(created_at AS DATE) AS created_at,\n+        ROW_NUMBER() OVER (\n+            PARTITION BY customer_id\n+            ORDER BY CAST(created_at AS DATE) DESC\n+        ) AS rn\n+    FROM raw.raw_customers\n+) t\n+WHERE rn = 1;\n",
-      "wall_s": 91.28,
+      "diff": "--- a/stg_customers.sql\n+++ b/stg_customers.sql\n@@ -4,5 +4,17 @@\n     customer_id,\n     segment,\n     country,\n-    CAST(created_at AS DATE) AS created_at\n-FROM raw.raw_customers;\n+    created_at\n+FROM (\n+    SELECT\n+        customer_id,\n+        segment,\n+        country,\n+        CAST(created_at AS DATE) AS created_at,\n+        ROW_NUMBER() OVER (\n+            PARTITION BY customer_id\n+            ORDER BY CAST(created_at AS DATE) DESC\n+        ) AS rn\n+    FROM raw.raw_customers\n+) dedup\n+WHERE rn = 1;\n",
+      "wall_s": 86.13,
       "error": null
     },
     {
@@ -420,24 +436,26 @@
         }
       ],
       "stats": {
-        "turns": 10,
-        "tool_calls": 18,
-        "input_tokens": 132126,
-        "output_tokens": 5970
+        "turns": 12,
+        "tool_calls": 22,
+        "input_tokens": 24,
+        "output_tokens": 4748,
+        "cache_read_input_tokens": 95672,
+        "cache_creation_input_tokens": 10314
       },
       "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_customers.sql\n+++ b/stg_customers.sql\n@@ -4,5 +4,17 @@\n     customer_id,\n     segment,\n     country,\n-    CAST(created_at AS DATE) AS created_at\n-FROM raw.raw_customers;\n+    created_at\n+FROM (\n+    SELECT\n+        customer_id,\n+        segment,\n+        country,\n+        CAST(created_at AS DATE) AS created_at,\n+        ROW_NUMBER() OVER (\n+            PARTITION BY customer_id\n+            ORDER BY created_at DESC\n+        ) AS rn\n+    FROM raw.raw_customers\n+)\n+WHERE rn = 1;\n",
-      "wall_s": 84.86,
+      "diff": "--- a/stg_customers.sql\n+++ b/stg_customers.sql\n@@ -4,5 +4,17 @@\n     customer_id,\n     segment,\n     country,\n-    CAST(created_at AS DATE) AS created_at\n-FROM raw.raw_customers;\n+    created_at\n+FROM (\n+    SELECT\n+        customer_id,\n+        segment,\n+        country,\n+        CAST(created_at AS DATE) AS created_at,\n+        ROW_NUMBER() OVER (\n+            PARTITION BY customer_id\n+            ORDER BY CAST(created_at AS DATE) DESC\n+        ) AS rn\n+    FROM raw.raw_customers\n+) AS deduped\n+WHERE rn = 1;\n",
+      "wall_s": 75.2,
       "error": null
     },
     {
       "scenario": "tz_shift",
-      "status": "failed",
+      "status": "passed",
       "grades": [
         {
           "name": "terminal_stage",
-          "passed": false,
-          "detail": "expected WRITTEN_BACK, got ESCALATED"
+          "passed": true,
+          "detail": "expected WRITTEN_BACK, got WRITTEN_BACK"
         },
         {
           "name": "root_cause_asset",
@@ -451,34 +469,36 @@
         },
         {
           "name": "files_within",
-          "passed": false,
-          "detail": "patched=[] allowed=['stg_orders']"
+          "passed": true,
+          "detail": "patched=['stg_orders'] allowed=['stg_orders']"
         },
         {
           "name": "mentions_all(cloudpay_v2)",
-          "passed": false,
-          "detail": "missing=['cloudpay_v2']"
+          "passed": true,
+          "detail": "missing=[]"
         },
         {
           "name": "mentions_any(interval, hour, timezone, at time zone)",
-          "passed": false,
-          "detail": "found=[]"
+          "passed": true,
+          "detail": "found=['interval', 'hour']"
         },
         {
           "name": "invariants_after_repair",
-          "passed": false,
-          "detail": "failed=['revenue_within_baseline_band', 'order_count_within_baseline_band', 'historical_revenue_immutable', 'diurnal_profile']"
+          "passed": true,
+          "detail": "failed=[]"
         }
       ],
       "stats": {
-        "turns": 18,
-        "tool_calls": 33,
-        "input_tokens": 385328,
-        "output_tokens": 24495
+        "turns": 21,
+        "tool_calls": 36,
+        "input_tokens": 42,
+        "output_tokens": 16886,
+        "cache_read_input_tokens": 353482,
+        "cache_creation_input_tokens": 31722
       },
-      "final_stage": "ESCALATED",
-      "diff": "",
-      "wall_s": 303.74,
+      "final_stage": "WRITTEN_BACK",
+      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -2,8 +2,16 @@\n CREATE OR REPLACE TABLE staging.stg_orders AS\n SELECT\n     order_id,\n-    CAST(order_ts AS TIMESTAMP) AS order_ts,\n-    CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n+    CASE WHEN payment_processor = 'cloudpay_v2'\n+         THEN CAST(order_ts AS TIMESTAMP) + INTERVAL 7 HOUR\n+         ELSE CAST(order_ts AS TIMESTAMP)\n+    END AS order_ts,\n+    CAST(\n+        CASE WHEN payment_processor = 'cloudpay_v2'\n+             THEN CAST(order_ts AS TIMESTAMP) + INTERVAL 7 HOUR\n+             ELSE CAST(order_ts AS TIMESTAMP)\n+        END AS DATE\n+    ) AS order_day,\n     customer_id,\n     currency,\n     CAST(amount AS DOUBLE) AS amount,\n",
+      "wall_s": 214.29,
       "error": null
     },
     {
@@ -522,24 +542,26 @@
         }
       ],
       "stats": {
-        "turns": 20,
-        "tool_calls": 37,
-        "input_tokens": 451645,
-        "output_tokens": 24787
+        "turns": 26,
+        "tool_calls": 43,
+        "input_tokens": 52,
+        "output_tokens": 17703,
+        "cache_read_input_tokens": 539587,
+        "cache_creation_input_tokens": 38776
       },
       "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -1,9 +1,24 @@\n -- Adapted from Project Blackbox (https://github.com/alejandro-publius/blackbox-datahub), Apache-2.0. Modified for Retrace.\n+-- Fix: payment_processor='cloudpay_v2' emits order_ts in local time (UTC-7), not UTC as the\n+-- raw_orders contract requires. This mis-timezoning shifted orders across calendar-day\n+-- boundaries (inflating some days, deflating others) once cloudpay_v2 launched on 2026-08-06.\n+-- Scoped correction: add 7 hours to cloudpay_v2 timestamps only, to recover true UTC order_ts\n+-- (and therefore the correct order_day) before any other rows are affected.\n CREATE OR REPLACE TABLE staging.stg_orders AS\n SELECT\n     order_id,\n-    CAST(order_ts AS TIMESTAMP) AS order_ts,\n-    CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n+    CASE\n+        WHEN payment_processor = 'cloudpay_v2'\n+            THEN CAST(order_ts AS TIMESTAMP) + INTERVAL '7 hours'\n+        ELSE CAST(order_ts AS TIMESTAMP)\n+    END AS order_ts,\n+    CAST(\n+        CASE\n+            WHEN payment_processor = 'cloudpay_v2'\n+                THEN CAST(order_ts AS TIMESTAMP) + INTERVAL '7 hours'\n+            ELSE CAST(order_ts AS TIMESTAMP)\n+        END AS DATE\n+    ) AS order_day,\n     customer_id,\n     currency,\n     CAST(amount AS DOUBLE) AS amount,\n",
-      "wall_s": 289.5,
+      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -2,12 +2,25 @@\n CREATE OR REPLACE TABLE staging.stg_orders AS\n SELECT\n     order_id,\n-    CAST(order_ts AS TIMESTAMP) AS order_ts,\n-    CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n+    corrected_ts AS order_ts,\n+    CAST(corrected_ts AS DATE) AS order_day,\n     customer_id,\n     currency,\n     CAST(amount AS DOUBLE) AS amount,\n     payment_processor,\n     status\n-FROM raw.raw_orders\n+FROM (\n+    SELECT\n+        *,\n+        CASE\n+            -- cloudpay_v2 emits order_ts in US Pacific local time (UTC-7,\n+            -- PDT) instead of UTC as required by the payments-platform v1.3\n+            -- contract. Convert to true UTC so date-boundary assignment is\n+            -- correct. Scoped to this processor only.\n+            WHEN payment_processor = 'cloudpay_v2'\n+                THEN CAST(order_ts AS TIMESTAMP) + INTERVAL 7 HOUR\n+            ELSE CAST(order_ts AS TIMESTAMP)\n+        END AS corrected_ts\n+    FROM raw.raw_orders\n+) t\n WHERE status = 'completed';\n",
+      "wall_s": 233.64,
       "error": null
     },
     {
       "scenario": "tz_shift#t3",
-      "status": "passed",
+      "status": "failed",
       "grades": [
         {
           "name": "terminal_stage",
-          "passed": true,
-          "detail": "expected WRITTEN_BACK, got WRITTEN_BACK"
+          "passed": false,
+          "detail": "expected WRITTEN_BACK, got FAILED (turn budget of 30 exhausted)"
         },
         {
           "name": "root_cause_asset",
@@ -573,14 +595,16 @@
         }
       ],
       "stats": {
-        "turns": 29,
-        "tool_calls": 53,
-        "input_tokens": 832968,
-        "output_tokens": 27894
+        "turns": 30,
+        "tool_calls": 51,
+        "input_tokens": 60,
+        "output_tokens": 22962,
+        "cache_read_input_tokens": 713562,
+        "cache_creation_input_tokens": 46128
       },
-      "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -2,8 +2,16 @@\n CREATE OR REPLACE TABLE staging.stg_orders AS\n SELECT\n     order_id,\n-    CAST(order_ts AS TIMESTAMP) AS order_ts,\n-    CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n+    CASE WHEN payment_processor = 'cloudpay_v2'\n+         THEN CAST(order_ts AS TIMESTAMP) + INTERVAL 7 HOUR\n+         ELSE CAST(order_ts AS TIMESTAMP)\n+    END AS order_ts,\n+    CAST(\n+        CASE WHEN payment_processor = 'cloudpay_v2'\n+             THEN CAST(order_ts AS TIMESTAMP) + INTERVAL 7 HOUR\n+             ELSE CAST(order_ts AS TIMESTAMP)\n+        END AS DATE\n+    ) AS order_day,\n     customer_id,\n     currency,\n     CAST(amount AS DOUBLE) AS amount,\n",
-      "wall_s": 329.11,
+      "final_stage": "FAILED",
+      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -1,9 +1,20 @@\n -- Adapted from Project Blackbox (https://github.com/alejandro-publius/blackbox-datahub), Apache-2.0. Modified for Retrace.\n+-- FIX: cloudpay_v2 writes order_ts on a clock 7h behind the local time used by\n+-- legacy_pos/shopgate (confirmed via diurnal-histogram alignment). Correct only\n+-- cloudpay_v2 rows so order_day buckets match true local calendar day.\n CREATE OR REPLACE TABLE staging.stg_orders AS\n SELECT\n     order_id,\n-    CAST(order_ts AS TIMESTAMP) AS order_ts,\n-    CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n+    CASE WHEN payment_processor = 'cloudpay_v2'\n+         THEN CAST(order_ts AS TIMESTAMP) + INTERVAL 7 HOUR\n+         ELSE CAST(order_ts AS TIMESTAMP)\n+    END AS order_ts,\n+    CAST(\n+        CASE WHEN payment_processor = 'cloudpay_v2'\n+             THEN CAST(order_ts AS TIMESTAMP) + INTERVAL 7 HOUR\n+             ELSE CAST(order_ts AS TIMESTAMP)\n+        END AS DATE\n+    ) AS order_day,\n     customer_id,\n     currency,\n     CAST(amount AS DOUBLE) AS amount,\n",
+      "wall_s": 292.84,
       "error": null
     },
     {
@@ -609,14 +633,16 @@
         }
       ],
       "stats": {
-        "turns": 11,
-        "tool_calls": 21,
-        "input_tokens": 142176,
-        "output_tokens": 8298
+        "turns": 10,
+        "tool_calls": 18,
+        "input_tokens": 20,
+        "output_tokens": 4991,
+        "cache_read_input_tokens": 80575,
+        "cache_creation_input_tokens": 11096
       },
       "final_stage": "ESCALATED",
       "diff": "",
-      "wall_s": 115.32,
+      "wall_s": 73.25,
       "error": null
     },
     {
@@ -645,14 +671,16 @@
         }
       ],
       "stats": {
-        "turns": 10,
-        "tool_calls": 18,
-        "input_tokens": 111513,
-        "output_tokens": 7167
+        "turns": 9,
+        "tool_calls": 17,
+        "input_tokens": 18,
+        "output_tokens": 4417,
+        "cache_read_input_tokens": 66393,
+        "cache_creation_input_tokens": 10301
       },
       "final_stage": "ESCALATED",
       "diff": "",
-      "wall_s": 97.73,
+      "wall_s": 66.99,
       "error": null
     },
     {
@@ -681,14 +709,16 @@
         }
       ],
       "stats": {
-        "turns": 9,
-        "tool_calls": 17,
-        "input_tokens": 104365,
-        "output_tokens": 7916
+        "turns": 11,
+        "tool_calls": 18,
+        "input_tokens": 22,
+        "output_tokens": 4492,
+        "cache_read_input_tokens": 83693,
+        "cache_creation_input_tokens": 7633
       },
       "final_stage": "ESCALATED",
       "diff": "",
-      "wall_s": 103.16,
+      "wall_s": 67.81,
       "error": null
     },
     {
@@ -717,14 +747,16 @@
         }
       ],
       "stats": {
-        "turns": 14,
-        "tool_calls": 26,
-        "input_tokens": 198237,
-        "output_tokens": 6952
+        "turns": 16,
+        "tool_calls": 27,
+        "input_tokens": 32,
+        "output_tokens": 8746,
+        "cache_read_input_tokens": 236412,
+        "cache_creation_input_tokens": 23104
       },
       "final_stage": "ESCALATED",
       "diff": "",
-      "wall_s": 91.68,
+      "wall_s": 121.97,
       "error": null
     },
     {
@@ -753,14 +785,16 @@
         }
       ],
       "stats": {
-        "turns": 27,
-        "tool_calls": 44,
-        "input_tokens": 762468,
-        "output_tokens": 18210
+        "turns": 20,
+        "tool_calls": 29,
+        "input_tokens": 40,
+        "output_tokens": 9902,
+        "cache_read_input_tokens": 255681,
+        "cache_creation_input_tokens": 19715
       },
       "final_stage": "ESCALATED",
       "diff": "",
-      "wall_s": 219.85,
+      "wall_s": 144.98,
       "error": null
     },
     {
@@ -789,14 +823,16 @@
         }
       ],
       "stats": {
-        "turns": 14,
-        "tool_calls": 27,
-        "input_tokens": 201663,
-        "output_tokens": 7422
+        "turns": 23,
+        "tool_calls": 45,
+        "input_tokens": 46,
+        "output_tokens": 15519,
+        "cache_read_input_tokens": 437434,
+        "cache_creation_input_tokens": 30724
       },
       "final_stage": "ESCALATED",
       "diff": "",
-      "wall_s": 99.5,
+      "wall_s": 199.84,
       "error": null
     },
     {
@@ -815,14 +851,16 @@
         }
       ],
       "stats": {
-        "turns": 5,
-        "tool_calls": 9,
-        "input_tokens": 36204,
-        "output_tokens": 3163
+        "turns": 12,
+        "tool_calls": 18,
+        "input_tokens": 24,
+        "output_tokens": 3909,
+        "cache_read_input_tokens": 91055,
+        "cache_creation_input_tokens": 9731
       },
       "final_stage": "NO_INCIDENT",
       "diff": "",
-      "wall_s": 50.21,
+      "wall_s": 70.97,
       "error": null
     },
     {
@@ -841,14 +879,16 @@
         }
       ],
       "stats": {
-        "turns": 5,
-        "tool_calls": 10,
-        "input_tokens": 35519,
-        "output_tokens": 2850
+        "turns": 8,
+        "tool_calls": 15,
+        "input_tokens": 16,
+        "output_tokens": 2924,
+        "cache_read_input_tokens": 52580,
+        "cache_creation_input_tokens": 8915
       },
       "final_stage": "NO_INCIDENT",
       "diff": "",
-      "wall_s": 47.18,
+      "wall_s": 53.78,
       "error": null
     },
     {
@@ -867,14 +907,16 @@
         }
       ],
       "stats": {
-        "turns": 5,
-        "tool_calls": 9,
-        "input_tokens": 36185,
-        "output_tokens": 3531
+        "turns": 7,
+        "tool_calls": 13,
+        "input_tokens": 14,
+        "output_tokens": 2470,
+        "cache_read_input_tokens": 40951,
+        "cache_creation_input_tokens": 6753
       },
       "final_stage": "NO_INCIDENT",
       "diff": "",
-      "wall_s": 53.39,
+      "wall_s": 44.64,
       "error": null
     },
     {
@@ -893,14 +935,16 @@
         }
       ],
       "stats": {
-        "turns": 8,
-        "tool_calls": 15,
-        "input_tokens": 78289,
-        "output_tokens": 4204
+        "turns": 10,
+        "tool_calls": 22,
+        "input_tokens": 20,
+        "output_tokens": 4321,
+        "cache_read_input_tokens": 73071,
+        "cache_creation_input_tokens": 10182
       },
       "final_stage": "NO_INCIDENT",
       "diff": "",
-      "wall_s": 59.93,
+      "wall_s": 62.9,
       "error": null
     },
     {
@@ -920,13 +964,15 @@
       ],
       "stats": {
         "turns": 7,
-        "tool_calls": 14,
-        "input_tokens": 62648,
-        "output_tokens": 3566
+        "tool_calls": 15,
+        "input_tokens": 14,
+        "output_tokens": 4172,
+        "cache_read_input_tokens": 44929,
+        "cache_creation_input_tokens": 9232
       },
       "final_stage": "NO_INCIDENT",
       "diff": "",
-      "wall_s": 53.64,
+      "wall_s": 65.13,
       "error": null
     },
     {
@@ -945,14 +991,16 @@
         }
       ],
       "stats": {
-        "turns": 7,
-        "tool_calls": 12,
-        "input_tokens": 59491,
-        "output_tokens": 3306
+        "turns": 8,
+        "tool_calls": 16,
+        "input_tokens": 16,
+        "output_tokens": 3202,
+        "cache_read_input_tokens": 55196,
+        "cache_creation_input_tokens": 5518
       },
       "final_stage": "NO_INCIDENT",
       "diff": "",
-      "wall_s": 52.04,
+      "wall_s": 53.15,
       "error": null
     },
     {
@@ -978,7 +1026,7 @@
       "stats": {},
       "final_stage": null,
       "diff": "",
-      "wall_s": 0.98,
+      "wall_s": 1.01,
       "error": null
     },
     {
@@ -997,14 +1045,16 @@
         }
       ],
       "stats": {
-        "turns": 40,
-        "tool_calls": 59,
-        "input_tokens": 638634,
-        "output_tokens": 9484
+        "turns": 3,
+        "tool_calls": 5,
+        "input_tokens": 6,
+        "output_tokens": 461,
+        "cache_read_input_tokens": 10102,
+        "cache_creation_input_tokens": 2628
       },
       "final_stage": "FAILED",
       "diff": "",
-      "wall_s": 142.79,
+      "wall_s": 20.12,
       "error": null
     },
     {
@@ -1049,13 +1099,15 @@
       ],
       "stats": {
         "turns": 12,
-        "tool_calls": 19,
-        "input_tokens": 147160,
-        "output_tokens": 6332
+        "tool_calls": 21,
+        "input_tokens": 24,
+        "output_tokens": 5314,
+        "cache_read_input_tokens": 111450,
+        "cache_creation_input_tokens": 12659
       },
       "final_stage": "WRITTEN_BACK",
-      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -6,7 +6,17 @@\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n     currency,\n-    CAST(amount AS DOUBLE) AS amount,\n+    -- cloudpay_v2 (onboarded 2026-08-07) violates the payments-platform v1.3 contract\n+    -- by sending `amount` as integer cents with no decimal separator (e.g. \"9686\" for\n+    -- 96.86), instead of a decimal in major currency units. Detect that encoding\n+    -- (no '.' present) and rescale by /100 so amount is normalized to major units,\n+    -- matching every other processor. Rows that already contain a decimal point are\n+    -- left untouched.\n+    CASE\n+        WHEN payment_processor = 'cloudpay_v2' AND amount NOT LIKE '%.%'\n+            THEN CAST(amount AS DOUBLE) / 100.0\n+        ELSE CAST(amount AS DOUBLE)\n+    END AS amount,\n     payment_processor,\n     status\n FROM raw.raw_orders\n",
-      "wall_s": 88.72,
+      "diff": "--- a/stg_orders.sql\n+++ b/stg_orders.sql\n@@ -6,7 +6,10 @@\n     CAST(CAST(order_ts AS TIMESTAMP) AS DATE) AS order_day,\n     customer_id,\n     currency,\n-    CAST(amount AS DOUBLE) AS amount,\n+    CASE\n+        WHEN payment_processor = 'cloudpay_v2' THEN CAST(amount AS DOUBLE) / 100.0\n+        ELSE CAST(amount AS DOUBLE)\n+    END AS amount,\n     payment_processor,\n     status\n FROM raw.raw_orders\n",
+      "wall_s": 78.58,
       "error": null
     }
   ]

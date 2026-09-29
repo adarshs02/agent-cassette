@@ -58,10 +58,12 @@ uv run agent-cassette view evals/cassettes/unit_cents.jsonl --output unit_cents.
 
 ## Results
 
-First live recording, against a real DataHub v1.7 quickstart with `claude-sonnet-5`, 3 trials
-per agent scenario. Full numbers in [`evals/results/scorecard.md`](evals/results/scorecard.md).
+Live run 2 against a real DataHub v1.7 quickstart with `claude-sonnet-5`, 3 trials per agent
+scenario, after token-cost improvements (conversation caching, compacted results, turn cap,
+early stop on outage) and the cross-platform determinism fix. Full details in
+[`evals/results/scorecard.md`](evals/results/scorecard.md).
 
-| scenario | faults correct |
+| scenario | passed |
 |---|---|
 | unit_cents | 3/3 |
 | schema_rename | 3/3 |
@@ -72,14 +74,14 @@ per agent scenario. Full numbers in [`evals/results/scorecard.md`](evals/results
 
 - Controls: 0 false positives in 6 runs (`control_healthy`, `control_distractor` × 3 trials).
 - Extra scenarios (`bad_repair_rejected`, `datahub_timeout`, `rate_limit_midrun`): all passed.
-- 23/24 agent trials overall — the one miss was `tz_shift` trial 1 escalating instead of
-  applying the UTC fix; trials 2 and 3 both passed.
-- Live wall time: 3141.8s. Keyless replay of the same suite from `evals/cassettes/`: ~26s.
-- ~6.0M input / 237k output tokens across the live run.
+- 23/24 agent trials overall. `tz_shift` trial 3 hit the turn cap; trials 1–2 passed.
+- Wall time: 2543.3s live. Keyless replay from `evals/cassettes/`: < 1 min, all 24/24 outcomes match (macOS and Linux verified).
+- Tokens: 692 uncached input, 401,378 cache-write, 4,314,329 cache-read, 172,721 output.
+  Estimated cost ≈ $3.59 at Sonnet 5 list prices ($2/$10 per MTok, cache write 1.25×, cache read 0.1×),
+  vs ≈ $14.38 for run 1 (6.0M uncached input / 237k output) — about **75% cheaper** with same accuracy.
 
 CI runs `retrace eval --replay` keylessly, offline, from the committed cassettes. It replays
-every scenario and checks that each outcome matches the recording — including `tz_shift`,
-whose recorded trial escalated rather than fixing the fault. A replay that reproduces a
+every scenario and checks that each outcome matches the recording. A replay that reproduces a
 recorded failure is a pass; a replay whose outcome diverges from the recording is not.
 
 ## Credits
